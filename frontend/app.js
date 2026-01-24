@@ -179,7 +179,7 @@ function initApp() {
                 if (this.isMobile && !this.searchForm.search && !this.searchForm.user_id) {
                     params.review_status = 0;
                     params.process_status = 2;
-                    params.order_by = 'time_desc'; // 保持与PC一致，从最新开始审核
+                    params.order_by = 'api_id_asc'; // 按 api_id 正序，取第一个非绿色（待审核）商品
                     params.page_size = 1; // 移动端只取一条
                 }
                 

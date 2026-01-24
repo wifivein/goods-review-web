@@ -410,6 +410,8 @@ def get_goods_list():
         order_clause = "ORDER BY create_time DESC"
         if order_by == 'id_asc':
             order_clause = "ORDER BY id ASC"
+        elif order_by == 'api_id_asc':
+            order_clause = "ORDER BY api_id ASC"
         
         # 查询总数
         count_sql = f"SELECT COUNT(*) as total FROM temu_goods_v2 {where_clause}"

@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>商品检查和修正系统</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f7fa;
+        }
+        .app-container {
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 0;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+        }
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .header-title-section {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin: 0;
+        }
+        .search-toggle-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+        .search-toggle-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        .header-search {
+            padding: 15px 20px;
+            background: rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+            overflow: hidden;
+            max-height: 200px;
+            opacity: 1;
+        }
+        .header-search.hidden {
+            max-height: 0 !important;
+            padding: 0 20px !important;
+            opacity: 0;
+            margin: 0 !important;
+            border: none !important;
+            overflow: hidden;
+        }
+        .header-stats {
+            display: flex;
+            gap: 30px;
+            align-items: center;
+        }
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 10px 20px;
+            border-radius: 8px;
+            min-width: 100px;
+            transition: all 0.3s;
+        }
+        .stat-item:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: scale(1.05);
+        }
+        .stat-item .stat-label {
+            font-size: 12px;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+        .stat-item .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .header-search {
+            padding: 15px 20px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .header-search .el-form {
+            margin: 0;
+        }
+        .header-search .el-form-item {
+            margin-bottom: 0;
+        }
+        .header-search .el-form-item__label {
+            color: white;
+        }
+        .header-search .el-input__inner {
+            background: rgba(255, 255, 255, 0.9);
+        }
+        .main-content {
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+            margin-top: 180px; /* header高度，会根据搜索栏显示/隐藏动态调整 */
+            transition: margin-top 0.3s ease;
+        }
+        /* 当搜索栏隐藏时，减少顶部间距 */
+        .header-search.hidden ~ * .main-content,
+        .header:has(.header-search.hidden) ~ .main-content {
+            margin-top: 120px;
+        }
+        .goods-card {
+            margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+        }
+        /* 废弃商品样式 - 整个div深灰色背景 */
+        .goods-card.discarded {
+            background-color: #d3d3d3 !important;
+        }
+        /* 使用深度选择器穿透Element Plus的样式作用域 */
+        .goods-card.discarded .el-card__body,
+        .goods-card.discarded .el-card__header {
+            background-color: #d3d3d3 !important;
+        }
+        /* 确保所有内容区域都是深灰色 */
+        .goods-card.discarded .goods-content-row,
+        .goods-card.discarded .main-image-preview,
+        .goods-card.discarded .goods-right-section,
+        .goods-card.discarded .goods-title-section,
+        .goods-card.discarded .goods-images-section,
+        .goods-card.discarded .third-image-container,
+        .goods-card.discarded .all-images-container {
+            background-color: #d3d3d3 !important;
+        }
+        .image-preview {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        .image-item {
+            position: relative;
+            border: 2px solid #e4e7ed;
+            border-radius: 4px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .image-item:hover {
+            border-color: #409eff;
+            transform: scale(1.05);
+        }
+        .image-item.active {
+            border-color: #409eff;
+            border-width: 3px;
+        }
+        .image-item img {
+            width: 120px;
+            height: 120px;
+            object-fit: cover;
+            display: block;
+        }
+        .image-item .image-label {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 4px;
+            font-size: 12px;
+            text-align: center;
+        }
+        .main-image-preview {
+            width: 300px;
+            height: 300px;
+            border: 2px solid #409eff;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 0;
+            flex-shrink: 0;
+        }
+        .main-image-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .third-image-preview {
+            width: 200px;
+            height: 300px;
+            border: 2px solid #67c23a;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 0;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .third-image-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .goods-content-row {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+        /* 桌面端：主图单独在左侧 */
+        .main-image-wrapper {
+            flex-shrink: 0;
+            display: block;
+        }
+        .main-image-item {
+            display: block;
+        }
+        /* 桌面端：隐藏移动端的第3张图 */
+        .mobile-third-image {
+            display: none !important;
+        }
+        /* 桌面端：显示桌面端的第3张图 */
+        .desktop-third-image {
+            display: flex;
+        }
+        .goods-right-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        .goods-title-section {
+            flex-shrink: 0;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #e4e7ed;
+            max-height: 45px;
+            overflow: hidden;
+        }
+        .goods-title-section strong {
+            display: block;
+            margin-bottom: 4px;
+            color: #303133;
+            font-size: 12px;
+        }
+        .goods-title-section > div {
+            color: #606266;
+            line-height: 1.3;
+            font-size: 12px;
+            max-height: 30px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+        }
+        .goods-images-section {
+            flex: 1;
+            display: flex;
+            gap: 15px;
+            align-items: flex-start;
+            width: 100%;
+        }
+        .third-image-container {
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .all-images-container {
+            flex: 1;
+            min-width: 0;
+            overflow: visible;
+        }
+        .all-images-preview {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 8px;
+            align-items: flex-start;
+            overflow: visible;
+        }
+        .all-images-item {
+            position: relative;
+            width: 100%;
+            height: 120px;
+            border: 2px solid #e4e7ed;
+            border-radius: 4px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.3s;
+            flex-shrink: 0;
+        }
+        .all-images-item:hover {
+            border-color: #409eff;
+            transform: scale(1.05);
+        }
+        .all-images-item.third-image {
+            border-color: #67c23a;
+            border-width: 3px;
+        }
+        .all-images-item.selectable {
+            cursor: pointer;
+            border-style: dashed;
+            border-color: #409eff;
+            border-width: 2px;
+            animation: pulse 2s infinite;
+        }
+        .all-images-item.selectable:hover {
+            border-color: #409eff;
+            border-width: 3px;
+            transform: scale(1.08);
+            box-shadow: 0 0 15px rgba(64, 158, 255, 0.6);
+        }
+        .all-images-item.selected {
+            border-color: #67c23a !important;
+            border-width: 4px !important;
+            box-shadow: 0 0 20px rgba(103, 194, 58, 0.8);
+            transform: scale(1.1);
+            background-color: rgba(103, 194, 58, 0.1);
+        }
+        @keyframes pulse {
+            0%, 100% {
+                border-color: #409eff;
+            }
+            50% {
+                border-color: #67c23a;
+            }
+        }
+        .all-images-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+        .all-images-item .image-index {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 3px;
+            font-size: 11px;
+            text-align: center;
+        }
+        .third-image-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .action-buttons {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        .batch-actions {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 4px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+        }
+        /* 滚动按钮样式 */
+        .scroll-buttons {
+            position: fixed;
+            right: 30px;
+            bottom: 30px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            z-index: 1000;
+        }
+        .scroll-btn {
+            width: 50px;
+            height: 50px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            transition: all 0.3s;
+        }
+        .scroll-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+        }
+        .scroll-btn-top {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+        }
+        .scroll-btn-bottom {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            border: none;
+        }
+        /* 分页栏固定在底部 */
+        .pagination-sticky {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            padding: 15px 20px;
+            box-shadow: 0 -2px 12px rgba(0,0,0,0.1);
+            z-index: 999;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        /* 确保内容不被分页栏遮挡 */
+        .main-content {
+            padding-bottom: 100px;
+        }
+        /* 操作按钮放大一倍 - 不使用transform，直接调整尺寸 */
+        .goods-card .el-card__header {
+            min-height: 100px;
+            display: flex;
+            align-items: center;
+            padding: 20px;
+        }
+        /* 商品头部行布局 */
+        .goods-header-row {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .goods-header-left {
+            flex: 1;
+            min-width: 300px;
+        }
+        /* 操作按钮行样式 */
+        .action-buttons-row {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+            flex-shrink: 0;
+        }
+        .action-buttons-row .el-button {
+            padding: 16px 32px !important;
+            font-size: 18px !important;
+            height: auto !important;
+            line-height: 1.5 !important;
+            min-width: 140px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        /* 可点击图片样式 */
+        .clickable-image {
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .clickable-image:hover {
+            opacity: 0.8;
+            transform: scale(1.02);
+        }
+        .clickable-image:active {
+            transform: scale(0.98);
+        }
+
+        /* ========== 移动端响应式适配 ========== */
+        @media (max-width: 768px) {
+            /* 顶部导航栏 - 移动端 */
+            .header-top {
+                flex-direction: column;
+                align-items: flex-start;
+                padding: 10px 15px;
+                gap: 10px;
+            }
+            .header h1 {
+                font-size: 18px;
+                width: 100%;
+            }
+            .header-stats {
+                width: 100%;
+                justify-content: space-between;
+                gap: 10px;
+            }
+            .stat-item {
+                flex: 1;
+                min-width: 0;
+                padding: 8px;
+            }
+            .stat-label {
+                font-size: 11px;
+            }
+            .stat-value {
+                font-size: 16px;
+            }
+
+            /* 搜索栏 - 移动端：默认隐藏 */
+            .header-search.hidden {
+                max-height: 0 !important;
+                padding: 0 15px !important;
+                margin: 0 !important;
+                border: none !important;
+                overflow: hidden;
+            }
+            .header-search {
+                padding: 10px 15px;
+                max-height: 300px;
+                transition: all 0.3s ease;
+            }
+            .header-search .el-form {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+            .header-search .el-form-item {
+                margin-bottom: 0;
+                width: 100%;
+            }
+            .header-search .el-form-item label {
+                display: none;
+            }
+            .header-search .el-input {
+                width: 100% !important;
+            }
+            .header-search .el-button {
+                flex: 1;
+                min-width: 0;
+            }
+
+            /* 主内容区域 - 移动端 */
+            .main-content {
+                margin-top: 120px;
+                padding: 10px;
+                transition: margin-top 0.3s ease;
+            }
+            /* 移动端：搜索栏展开时，增加顶部间距 */
+            .header:not(:has(.header-search.hidden)) ~ .main-content,
+            .header-search:not(.hidden) ~ * .main-content {
+                margin-top: 200px;
+            }
+
+            /* 商品卡片 - 移动端 */
+            .goods-card {
+                margin-bottom: 15px;
+            }
+            .goods-header-row {
+                flex-direction: column;
+                gap: 10px;
+            }
+            .goods-header-left {
+                width: 100%;
+                font-size: 12px;
+            }
+            .goods-title-inline {
+                font-size: 13px !important;
+                line-height: 1.4;
+                word-break: break-word;
+                margin-top: 6px;
+            }
+            .action-buttons-row {
+                flex-wrap: wrap;
+                gap: 5px;
+                width: 100%;
+            }
+            .action-buttons-row {
+                display: none !important;
+            }
+            .clickable-image {
+                cursor: pointer;
+            }
+
+            /* 商品内容 - 移动端 */
+            .goods-content-row {
+                flex-direction: column;
+                gap: 10px;
+            }
+            /* 移动端：主图和第3张图并排显示 */
+            .main-image-wrapper {
+                width: 100% !important;
+                display: flex !important;
+                flex-direction: row !important;
+                gap: 10px !important;
+                align-items: flex-start !important;
+            }
+            .main-image-item {
+                flex: 1 !important;
+                width: 50% !important;
+                max-width: 50% !important;
+            }
+            .mobile-third-image {
+                flex: 1 !important;
+                width: 50% !important;
+                max-width: 50% !important;
+                display: flex !important;
+                flex-direction: column !important;
+            }
+            .main-image-preview {
+                width: 100% !important;
+                height: auto !important;
+                aspect-ratio: 1 !important;
+                min-height: 0 !important;
+            }
+            .main-image-preview img {
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+            }
+            .third-image-preview {
+                width: 100% !important;
+                height: auto !important;
+                aspect-ratio: 1 !important;
+                min-height: 0 !important;
+            }
+            .third-image-preview img {
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+            }
+            /* 移动端：隐藏桌面端的第3张图 */
+            .desktop-third-image {
+                display: none !important;
+            }
+            /* 移动端：标题和所有轮播图单独一行 */
+            .goods-right-section {
+                width: 100%;
+            }
+            .goods-images-section {
+                flex-direction: column;
+            }
+            /* 主图标题和第3张图标题 - 移动端 */
+            .main-image-item > div:first-child,
+            .mobile-third-image > div:first-child {
+                font-size: 11px;
+                margin-bottom: 4px;
+            }
+            .all-images-container {
+                width: 100%;
+            }
+            .all-images-preview {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+                gap: 8px;
+            }
+            .all-images-item {
+                width: 100%;
+                aspect-ratio: 1;
+            }
+            .all-images-item img {
+                width: 100%;
+                height: 100%;
+            }
+
+            /* 分页 - 移动端 */
+            .el-pagination {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+            .el-pagination .el-pagination__sizes,
+            .el-pagination .el-pagination__jump {
+                width: 100%;
+                margin-top: 10px;
+                justify-content: center;
+            }
+
+            /* 编辑对话框 - 移动端 */
+            .el-dialog {
+                width: 95% !important;
+                margin: 5vh auto !important;
+            }
+            .el-dialog__body {
+                padding: 15px;
+            }
+            .el-form-item {
+                margin-bottom: 15px;
+            }
+            .el-form-item__label {
+                width: 100% !important;
+                text-align: left !important;
+                margin-bottom: 5px;
+            }
+
+            /* 滚动按钮 - 移动端 */
+            .scroll-buttons {
+                bottom: 20px;
+                right: 15px;
+            }
+            .scroll-btn {
+                width: 45px;
+                height: 45px;
+            }
+
+            /* 批量操作 - 移动端 */
+            .batch-actions {
+                flex-direction: column;
+                gap: 10px;
+            }
+            .batch-actions .el-button {
+                width: 100%;
+            }
+        }
+
+        /* 小屏幕手机 (max-width: 480px) */
+        @media (max-width: 480px) {
+            .header h1 {
+                font-size: 16px;
+            }
+            .stat-value {
+                font-size: 14px;
+            }
+            .action-buttons-row {
+                display: none !important;
+            }
+            .main-content {
+                margin-top: 180px;
+                padding: 8px;
+            }
+            /* 小屏幕：主图和第3张图并排显示 */
+            .main-image-wrapper {
+                display: flex !important;
+                flex-direction: row !important;
+                gap: 8px !important;
+            }
+            .main-image-item {
+                flex: 1 !important;
+                width: 50% !important;
+                max-width: 50% !important;
+            }
+            .mobile-third-image {
+                flex: 1 !important;
+                width: 50% !important;
+                max-width: 50% !important;
+            }
+            .main-image-preview {
+                aspect-ratio: 1 !important;
+            }
+            .third-image-preview {
+                aspect-ratio: 1 !important;
+            }
+            .desktop-third-image {
+                display: none !important;
+            }
+            .all-images-preview {
+                grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+                gap: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="app" class="app-container">
+        <div class="header">
+            <div class="header-top">
+                <div class="header-title-section">
+                    <h1>📦 商品检查和修正系统</h1>
+                    <el-button 
+                        class="search-toggle-btn"
+                        @click="toggleSearchBar"
+                        :icon="searchBarVisible ? 'ArrowUp' : 'Search'"
+                        circle
+                        size="small"
+                        title="展开/收起搜索栏"
+                    >
+                        <span v-if="!searchBarVisible">🔍</span>
+                        <span v-else>▲</span>
+                    </el-button>
+                </div>
+                <div class="header-stats">
+                    <div class="stat-item">
+                        <div class="stat-label">预处理</div>
+                        <div class="stat-value">{{ statistics.preprocessing || 0 }}</div>
+                    </div>
+                    <div class="stat-item" style="cursor: pointer;" @click="scrollToFirstPendingUpload" title="点击跳转到第一条待上传商品">
+                        <div class="stat-label">待上传</div>
+                        <div class="stat-value">{{ statistics.pending_upload || 0 }}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">已废弃</div>
+                        <div class="stat-value">{{ statistics.discarded || 0 }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="header-search" :class="{ 'hidden': !searchBarVisible }">
+                <el-form :inline="true" :model="searchForm" class="search-form">
+                    <el-form-item label="关键词">
+                        <el-input 
+                            v-model="searchForm.search" 
+                            placeholder="搜索标题或名称"
+                            clearable
+                            @keyup.enter="handleSearch"
+                            style="width: 300px;"
+                            class="search-input"
+                        ></el-input>
+                    </el-form-item>
+                    <el-form-item label="用户ID">
+                        <el-input 
+                            v-model="searchForm.user_id" 
+                            placeholder="用户ID"
+                            clearable
+                            style="width: 200px;"
+                            class="search-input"
+                        ></el-input>
+                    </el-form-item>
+                    <el-form-item>
+                        <el-button type="primary" @click="handleSearch">搜索</el-button>
+                        <el-button @click="handleReset">重置</el-button>
+                        <el-button type="success" @click="loadGoodsList">刷新列表</el-button>
+                    </el-form-item>
+                </el-form>
+            </div>
+        </div>
+        
+        <div class="main-content">
+
+            <!-- 批量操作 -->
+            <div class="batch-actions" v-if="selectedGoods.length > 0">
+                <el-alert
+                    :title="`已选择 ${selectedGoods.length} 个商品`"
+                    type="info"
+                    :closable="false"
+                    style="margin-bottom: 10px;"
+                ></el-alert>
+                <el-button type="success" @click="handleBatchSave" :loading="batchSaving">
+                    批量保存 ({{ selectedGoods.length }})
+                </el-button>
+                <el-button @click="selectedGoods = []">取消选择</el-button>
+            </div>
+
+            <!-- 商品列表 -->
+            <el-card 
+                v-for="goods in goodsList" 
+                :key="goods.id" 
+                :id="`goods-card-${goods.id}`"
+                class="goods-card"
+                :class="{ 
+                    'selected': selectedGoods.includes(goods.id),
+                    'discarded': goods.title && (goods.title.includes('⚠️已废弃') || goods.title.includes('⚠️废弃'))
+                }"
+                :style="goods.title && (goods.title.includes('⚠️已废弃') || goods.title.includes('⚠️废弃')) ? { 
+                    '--el-card-bg-color': '#d3d3d3',
+                    'background': '#d3d3d3',
+                    'background-color': '#d3d3d3'
+                } : {}"
+            >
+                <template #header>
+                    <div 
+                        class="goods-header-row"
+                        :style="goods.title && (goods.title.includes('⚠️已废弃') || goods.title.includes('⚠️废弃')) ? { 'background-color': '#d3d3d3', 'padding': '20px', 'margin': '-20px -20px 0 -20px' } : {}"
+                    >
+                        <div class="goods-header-left">
+                            <el-checkbox 
+                                :model-value="selectedGoods.includes(goods.id)"
+                                @change="(checked) => handleCheckboxChange(goods.id, checked)"
+                            >
+                                <strong>商品ID: {{ goods.goods_id }}</strong>
+                            </el-checkbox>
+                            <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266;">
+                                {{ goods.title }}
+                            </div>
+                        </div>
+                        <!-- 操作按钮已隐藏，改为点击图片弹出操作选择 -->
+                        <div class="action-buttons-row" style="display: none;">
+                            <el-button 
+                                type="primary" 
+                                size="default" 
+                                @click="handleReplaceMainImage(goods)"
+                            >
+                                更换主图
+                            </el-button>
+                            <el-button 
+                                type="success" 
+                                size="default" 
+                                @click="handleReplaceThirdImage(goods)"
+                            >
+                                更换第3张图
+                            </el-button>
+                            <el-button 
+                                type="danger" 
+                                size="default" 
+                                @click="handleRemoveImage(goods)"
+                            >
+                                删除轮播图
+                            </el-button>
+                            <el-button 
+                                type="warning" 
+                                size="default" 
+                                @click="handleDiscard(goods)"
+                            >
+                                ⚠️废弃
+                            </el-button>
+                        </div>
+                    </div>
+                </template>
+
+                <div 
+                    class="goods-content-row"
+                    :style="goods.title && (goods.title.includes('⚠️已废弃') || goods.title.includes('⚠️废弃')) ? { 
+                        'background-color': '#f5f5f5',
+                        'background': '#f5f5f5',
+                        'padding': '20px',
+                        'margin': '-20px'
+                    } : {}"
+                >
+                    <!-- 左侧：主图（桌面端）或主图+第3张图（移动端） -->
+                    <div class="main-image-wrapper">
+                        <!-- 主图（显示轮播图第1张） -->
+                        <div class="main-image-item">
+                            <div style="margin-bottom: 8px;">
+                                <strong style="color: #409eff; font-size: 14px;">主图（轮播图第1张）</strong>
+                            </div>
+                            <div class="main-image-preview clickable-image" @click="showImageActionDialog(goods, 0)">
+                                <img 
+                                    :src="(goods.image_list && goods.image_list.length > 0) ? goods.image_list[0] : goods.main_image" 
+                                    :alt="goods.title" 
+                                    @error="handleImageError"
+                                >
+                            </div>
+                        </div>
+                        <!-- 第三张轮播图（仅移动端显示，与主图并排） -->
+                        <div class="third-image-container mobile-third-image">
+                            <div style="margin-bottom: 5px; flex-shrink: 0;">
+                                <strong style="color: #67c23a; font-size: 12px;">第3张</strong>
+                            </div>
+                            <div class="third-image-preview clickable-image" v-if="goods.image_list && goods.image_list.length >= 3" @click="showImageActionDialog(goods, 2)">
+                                <img :src="goods.image_list[2]" :alt="goods.title" @error="handleImageError">
+                            </div>
+                            <div v-else style="width: 100%; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: #909399; border: 2px dashed #e4e7ed; border-radius: 4px; font-size: 12px;">
+                                暂无
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 右侧：标题、第三张轮播图（桌面端）和所有轮播图 -->
+                    <div class="goods-right-section">
+                        <!-- 图片区域：桌面端显示第3张图，移动端只显示所有轮播图 -->
+                        <div class="goods-images-section">
+                            <!-- 第三张轮播图（大图）- 仅桌面端显示 -->
+                            <div class="third-image-container desktop-third-image">
+                                <div style="margin-bottom: 5px; flex-shrink: 0;">
+                                    <strong style="color: #67c23a; font-size: 12px;">第3张</strong>
+                                </div>
+                                <div class="third-image-preview clickable-image" v-if="goods.image_list && goods.image_list.length >= 3" @click="showImageActionDialog(goods, 2)">
+                                    <img :src="goods.image_list[2]" :alt="goods.title" @error="handleImageError">
+                                </div>
+                                <div v-else style="width: 200px; height: 300px; display: flex; align-items: center; justify-content: center; color: #909399; border: 2px dashed #e4e7ed; border-radius: 4px; font-size: 12px;">
+                                    暂无
+                                </div>
+                            </div>
+
+                            <!-- 所有轮播图（小图） -->
+                            <div class="all-images-container">
+                                <div style="margin-bottom: 5px; flex-shrink: 0;">
+                                    <strong style="color: #606266; font-size: 12px;">所有轮播图</strong>
+                                </div>
+                                <div class="all-images-preview" v-if="goods.image_list && goods.image_list.length > 0" style="padding-right: 5px;">
+                                    <div 
+                                        v-for="(img, index) in goods.image_list" 
+                                        :key="`${goods.id}-${index}`"
+                                        class="all-images-item clickable-image"
+                                        :class="{ 
+                                            'third-image': index === 2,
+                                            'selectable': selectingImageMap[goods.id] !== undefined && selectingImageMap[goods.id] !== null,
+                                            'selected': selectingImageMap[goods.id] === index
+                                        }"
+                                        @click.stop="selectingImageMap[goods.id] ? handleImageSelect(goods, index, $event) : showImageActionDialog(goods, index)"
+                                    >
+                                        <img :src="img" :alt="`图片${index + 1}`" @error="handleImageError">
+                                        <div class="image-index">第{{ index + 1 }}张</div>
+                                    </div>
+                                </div>
+                                <div v-else style="color: #909399; padding: 20px; text-align: center; font-size: 12px;">
+                                    暂无轮播图
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </el-card>
+
+            <!-- 分页 - 固定在底部 -->
+            <div style="height: 80px;"></div>
+            <el-pagination
+                v-model:current-page="pagination.page"
+                v-model:page-size="pagination.page_size"
+                :page-sizes="[10, 20, 50, 100]"
+                :total="pagination.total"
+                :layout="isMobile ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper'"
+                @size-change="handleSizeChange"
+                @current-change="handlePageChange"
+                class="pagination-sticky"
+            ></el-pagination>
+        </div>
+
+        <!-- 滚动按钮 -->
+        <div class="scroll-buttons">
+            <el-button 
+                type="primary" 
+                circle 
+                size="large"
+                @click="scrollToTop"
+                title="滚动到顶部"
+                class="scroll-btn scroll-btn-top"
+            >
+                <span style="font-size: 18px;">↑</span>
+            </el-button>
+            <el-button 
+                type="primary" 
+                circle 
+                size="large"
+                @click="scrollToBottom"
+                title="滚动到底部"
+                class="scroll-btn scroll-btn-bottom"
+            >
+                <span style="font-size: 18px;">↓</span>
+            </el-button>
+        </div>
+
+        <!-- 图片操作选择弹窗 -->
+        <el-dialog
+            v-model="imageActionDialogVisible"
+            title="选择操作"
+            width="400px"
+            :close-on-click-modal="true"
+        >
+            <div v-if="currentActionGoods && currentActionImageIndex !== null">
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <div style="color: #909399; font-size: 14px; margin-bottom: 10px;">
+                        对第{{ currentActionImageIndex + 1 }}张图片进行操作
+                    </div>
+                    <div style="max-width: 200px; margin: 0 auto; border: 1px solid #e4e7ed; border-radius: 4px; overflow: hidden;">
+                        <img 
+                            :src="currentActionGoods.image_list[currentActionImageIndex]" 
+                            :alt="`图片${currentActionImageIndex + 1}`"
+                            style="width: 100%; height: auto; display: block;"
+                            @error="handleImageError"
+                        >
+                    </div>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <el-button 
+                        type="primary" 
+                        size="large"
+                        @click="handleActionFromDialog('replace-main')"
+                        :disabled="currentActionImageIndex === 0"
+                    >
+                        更换主图
+                    </el-button>
+                    <el-button 
+                        type="success" 
+                        size="large"
+                        @click="handleActionFromDialog('replace-third')"
+                        :disabled="currentActionImageIndex === 2 || !currentActionGoods.image_list || currentActionGoods.image_list.length < 3"
+                    >
+                        更换第3张图
+                    </el-button>
+                    <el-button 
+                        type="danger" 
+                        size="large"
+                        @click="handleActionFromDialog('remove')"
+                        :disabled="!currentActionGoods.image_list || currentActionGoods.image_list.length <= 1"
+                    >
+                        删除轮播图
+                    </el-button>
+                    <el-button 
+                        type="warning" 
+                        size="large"
+                        @click="handleActionFromDialog('discard')"
+                    >
+                        ⚠️废弃商品
+                    </el-button>
+                </div>
+            </div>
+            <template #footer>
+                <el-button @click="imageActionDialogVisible = false">取消</el-button>
+            </template>
+        </el-dialog>
+    </div>
+
+    <!-- API 配置：根据部署环境修改此处的 API_BASE_URL -->
+    <script>
+        // 自动检测 API 地址：如果当前页面不是 localhost，则使用相对路径（通过 nginx 反向代理）
+        // 否则使用 localhost:5001（本地开发环境）
+        // 使用 window 对象存储，避免作用域问题
+        window.API_BASE_URL = (function() {
+            const hostname = window.location.hostname;
+            if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                return 'http://localhost:5001/api';
+            } else {
+                // 云服务器部署：使用相对路径，通过 nginx 反向代理到后端
+                return '/api';
+            }
+        })();
+        // 同时设置全局变量（兼容性）
+        var API_BASE_URL = window.API_BASE_URL;
+    </script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="app.js?v=18"></script>
+</body>
+</html>

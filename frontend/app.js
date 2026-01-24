@@ -428,8 +428,12 @@ function initApp() {
                 
                 if (response.data.code === 0) {
                     ElMessage.success('商品已标记为废弃');
-                    // 刷新该商品的数据
-                    await this.refreshGoodsItem(goods.id);
+                    // 移动端：直接加载下一条；PC端：刷新当前项
+                    if (this.isMobile) {
+                        await this.loadGoodsList();
+                    } else {
+                        await this.refreshGoodsItem(goods.id);
+                    }
                     // 立即刷新统计数据
                     this.loadStatistics();
                 } else {
@@ -451,8 +455,12 @@ function initApp() {
                 
                 if (response.data.code === 0) {
                     ElMessage.success('商品已审核通过');
-                    // 刷新该商品的数据
-                    await this.refreshGoodsItem(goods.id);
+                    // 移动端：直接加载下一条；PC端：刷新当前项
+                    if (this.isMobile) {
+                        await this.loadGoodsList();
+                    } else {
+                        await this.refreshGoodsItem(goods.id);
+                    }
                     // 立即刷新统计数据
                     this.loadStatistics();
                 } else {

@@ -709,18 +709,11 @@
                 margin-bottom: 5px;
             }
 
-            /* 滚动按钮 - 移动端 */
-            .scroll-buttons {
-                bottom: 20px;
-                right: 15px;
-            }
-            .scroll-btn {
-                width: 45px;
-                height: 45px;
-            }
-
-            /* 批量操作 - 移动端 */
-            .batch-actions {
+        /* 滚动按钮 - 移动端 */
+        .scroll-buttons {
+            display: none !important;
+        }
+        .batch-actions {
                 flex-direction: column;
                 gap: 10px;
             }
@@ -886,9 +879,9 @@
                                     <el-button 
                                         v-if="goodsList[0].review_status === 0"
                                         type="success" 
-                                        size="small" 
+                                        size="large" 
                                         @click="handleApprove(goodsList[0])"
-                                        style="padding: 4px 8px; height: auto;"
+                                        style="padding: 12px 24px; font-size: 18px; font-weight: bold; height: auto;"
                                     >
                                         审核通过
                                     </el-button>
@@ -981,9 +974,9 @@
                                     <el-button 
                                         v-if="goods.review_status === 0"
                                         type="success" 
-                                        size="small" 
+                                        size="large" 
                                         @click="handleApprove(goods)"
-                                        style="padding: 4px 8px; height: auto;"
+                                        style="padding: 12px 24px; font-size: 18px; font-weight: bold; height: auto;"
                                     >
                                         审核通过
                                     </el-button>
@@ -1191,6 +1184,6 @@
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
-    <script src="app.js?v=20"></script>
+    <script src="app.js?v=21"></script>
 </body>
 </html>

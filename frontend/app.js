@@ -179,7 +179,8 @@ function initApp() {
                 if (this.isMobile && !this.searchForm.search && !this.searchForm.user_id) {
                     params.review_status = 0;
                     params.process_status = 2;
-                    params.order_by = 'id_asc'; // 按 api_id 顺序
+                    params.order_by = 'time_desc'; // 保持与PC一致，从最新开始审核
+                    params.page_size = 1; // 移动端只取一条
                 }
                 
                 const response = await axios.get(`${API_BASE_URL}/goods/list`, { params });

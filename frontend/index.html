@@ -860,182 +860,222 @@
             </div>
 
             <!-- 商品列表 -->
-            <el-card 
-                v-for="goods in goodsList" 
-                :key="goods.id" 
-                :id="`goods-card-${goods.id}`"
-                class="goods-card"
-                :class="{ 
-                    'selected': selectedGoods.includes(goods.id),
-                    'discarded': goods.review_status === 2,
-                    'approved': goods.review_status === 1
-                }"
-                :style="goods.review_status === 2 ? { 
-                    '--el-card-bg-color': '#d3d3d3',
-                    'background': '#d3d3d3',
-                    'background-color': '#d3d3d3'
-                } : (goods.review_status === 1 ? {
-                    '--el-card-bg-color': '#f0f9eb',
-                    'background': '#f0f9eb',
-                    'background-color': '#f0f9eb'
-                } : {})"
-            >
-                <template #header>
-                    <div 
-                        class="goods-header-row"
-                        :style="goods.title && (goods.title.includes('⚠️已废弃') || goods.title.includes('⚠️废弃')) ? { 'background-color': '#d3d3d3', 'padding': '20px', 'margin': '-20px -20px 0 -20px' } : {}"
-                    >
-                        <div class="goods-header-left">
-                            <el-checkbox 
-                                :model-value="selectedGoods.includes(goods.id)"
-                                @change="(checked) => handleCheckboxChange(goods.id, checked)"
-                            >
-                                <strong>商品ID: {{ goods.goods_id }}</strong>
-                            </el-checkbox>
-                            <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266; display: flex; align-items: center; gap: 10px;">
-                                <span>{{ goods.title }}</span>
-                                <el-button 
-                                    v-if="goods.review_status === 0"
-                                    type="success" 
-                                    size="small" 
-                                    @click="handleApprove(goods)"
-                                    style="padding: 4px 8px; height: auto;"
-                                >
-                                    审核通过
-                                </el-button>
-                            </div>
-                        </div>
-                        <!-- 操作按钮已隐藏，改为点击图片弹出操作选择 -->
-                        <div class="action-buttons-row" style="display: none;">
-                            <el-button 
-                                type="primary" 
-                                size="default" 
-                                @click="handleReplaceMainImage(goods)"
-                            >
-                                更换主图
-                            </el-button>
-                            <el-button 
-                                type="success" 
-                                size="default" 
-                                @click="handleReplaceThirdImage(goods)"
-                            >
-                                更换第3张图
-                            </el-button>
-                            <el-button 
-                                type="danger" 
-                                size="default" 
-                                @click="handleRemoveImage(goods)"
-                            >
-                                删除轮播图
-                            </el-button>
-                            <el-button 
-                                type="warning" 
-                                size="default" 
-                                @click="handleDiscard(goods)"
-                            >
-                                ⚠️废弃
-                            </el-button>
-                        </div>
-                    </div>
-                </template>
-
-                <div 
-                    class="goods-content-row"
-                    :style="goods.title && (goods.title.includes('⚠️已废弃') || goods.title.includes('⚠️废弃')) ? { 
-                        'background-color': '#f5f5f5',
-                        'background': '#f5f5f5',
-                        'padding': '20px',
-                        'margin': '-20px'
+            <div v-if="isMobile">
+                <!-- 移动端：只显示第一条待审核商品 -->
+                <el-card 
+                    v-if="goodsList.length > 0"
+                    :key="goodsList[0].id" 
+                    :id="`goods-card-${goodsList[0].id}`"
+                    class="goods-card"
+                    :class="{ 
+                        'selected': selectedGoods.includes(goodsList[0].id),
+                        'approved': goodsList[0].review_status === 1
+                    }"
+                    :style="goodsList[0].review_status === 1 ? {
+                        '--el-card-bg-color': '#f0f9eb',
+                        'background': '#f0f9eb',
+                        'background-color': '#f0f9eb'
                     } : {}"
                 >
-                    <!-- 左侧：主图（桌面端）或主图+第3张图（移动端） -->
-                    <div class="main-image-wrapper">
-                        <!-- 主图（显示轮播图第1张） -->
-                        <div class="main-image-item">
-                            <div style="margin-bottom: 8px;">
-                                <strong style="color: #409eff; font-size: 14px;">主图（轮播图第1张）</strong>
-                            </div>
-                            <div class="main-image-preview clickable-image" @click="showImageActionDialog(goods, 0)">
-                                <img 
-                                    :src="(goods.image_list && goods.image_list.length > 0) ? goods.image_list[0] : goods.main_image" 
-                                    :alt="goods.title" 
-                                    @error="handleImageError"
-                                >
-                            </div>
-                        </div>
-                        <!-- 第三张轮播图（仅移动端显示，与主图并排） -->
-                        <div class="third-image-container mobile-third-image">
-                            <div style="margin-bottom: 5px; flex-shrink: 0;">
-                                <strong style="color: #67c23a; font-size: 12px;">第3张</strong>
-                            </div>
-                            <div class="third-image-preview clickable-image" v-if="goods.image_list && goods.image_list.length >= 3" @click="showImageActionDialog(goods, 2)">
-                                <img :src="goods.image_list[2]" :alt="goods.title" @error="handleImageError">
-                            </div>
-                            <div v-else style="width: 100%; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: #909399; border: 2px dashed #e4e7ed; border-radius: 4px; font-size: 12px;">
-                                暂无
+                    <template #header>
+                        <div class="goods-header-row">
+                            <div class="goods-header-left">
+                                <strong>商品ID: {{ goodsList[0].goods_id }}</strong>
+                                <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266; display: flex; align-items: center; gap: 10px;">
+                                    <span>{{ goodsList[0].title }}</span>
+                                    <el-button 
+                                        v-if="goodsList[0].review_status === 0"
+                                        type="success" 
+                                        size="small" 
+                                        @click="handleApprove(goodsList[0])"
+                                        style="padding: 4px 8px; height: auto;"
+                                    >
+                                        审核通过
+                                    </el-button>
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    </template>
 
-                    <!-- 右侧：标题、第三张轮播图（桌面端）和所有轮播图 -->
-                    <div class="goods-right-section">
-                        <!-- 图片区域：桌面端显示第3张图，移动端只显示所有轮播图 -->
-                        <div class="goods-images-section">
-                            <!-- 第三张轮播图（大图）- 仅桌面端显示 -->
-                            <div class="third-image-container desktop-third-image">
-                                <div style="margin-bottom: 5px; flex-shrink: 0;">
+                    <div class="goods-content-row">
+                        <div class="main-image-wrapper">
+                            <div class="main-image-item">
+                                <div style="margin-bottom: 8px;">
+                                    <strong style="color: #409eff; font-size: 14px;">主图</strong>
+                                </div>
+                                <div class="main-image-preview clickable-image" @click="showImageActionDialog(goodsList[0], 0)">
+                                    <img :src="(goodsList[0].image_list && goodsList[0].image_list.length > 0) ? goodsList[0].image_list[0] : goodsList[0].main_image" @error="handleImageError">
+                                </div>
+                            </div>
+                            <div class="third-image-container mobile-third-image">
+                                <div style="margin-bottom: 5px;">
                                     <strong style="color: #67c23a; font-size: 12px;">第3张</strong>
                                 </div>
-                                <div class="third-image-preview clickable-image" v-if="goods.image_list && goods.image_list.length >= 3" @click="showImageActionDialog(goods, 2)">
-                                    <img :src="goods.image_list[2]" :alt="goods.title" @error="handleImageError">
+                                <div class="third-image-preview clickable-image" v-if="goodsList[0].image_list && goodsList[0].image_list.length >= 3" @click="showImageActionDialog(goodsList[0], 2)">
+                                    <img :src="goodsList[0].image_list[2]" @error="handleImageError">
                                 </div>
-                                <div v-else style="width: 200px; height: 300px; display: flex; align-items: center; justify-content: center; color: #909399; border: 2px dashed #e4e7ed; border-radius: 4px; font-size: 12px;">
-                                    暂无
-                                </div>
+                                <div v-else class="empty-image-placeholder">暂无</div>
                             </div>
-
-                            <!-- 所有轮播图（小图） -->
-                            <div class="all-images-container">
-                                <div style="margin-bottom: 5px; flex-shrink: 0;">
-                                    <strong style="color: #606266; font-size: 12px;">所有轮播图</strong>
-                                </div>
-                                <div class="all-images-preview" v-if="goods.image_list && goods.image_list.length > 0" style="padding-right: 5px;">
-                                    <div 
-                                        v-for="(img, index) in goods.image_list" 
-                                        :key="`${goods.id}-${index}`"
-                                        class="all-images-item clickable-image"
-                                        :class="{ 
-                                            'third-image': index === 2,
-                                            'selectable': selectingImageMap[goods.id] !== undefined && selectingImageMap[goods.id] !== null,
-                                            'selected': selectingImageMap[goods.id] === index
-                                        }"
-                                        @click.stop="selectingImageMap[goods.id] ? handleImageSelect(goods, index, $event) : showImageActionDialog(goods, index)"
-                                    >
-                                        <img :src="img" :alt="`图片${index + 1}`" @error="handleImageError">
-                                        <div class="image-index">第{{ index + 1 }}张</div>
+                        </div>
+                        <div class="goods-right-section">
+                            <div class="goods-images-section">
+                                <div class="all-images-container">
+                                    <div style="margin-bottom: 5px;">
+                                        <strong style="color: #606266; font-size: 12px;">所有轮播图</strong>
                                     </div>
-                                </div>
-                                <div v-else style="color: #909399; padding: 20px; text-align: center; font-size: 12px;">
-                                    暂无轮播图
+                                    <div class="all-images-preview" v-if="goodsList[0].image_list && goodsList[0].image_list.length > 0">
+                                        <div 
+                                            v-for="(img, index) in goodsList[0].image_list" 
+                                            :key="`${goodsList[0].id}-${index}`"
+                                            class="all-images-item clickable-image"
+                                            @click.stop="showImageActionDialog(goodsList[0], index)"
+                                        >
+                                            <img :src="img" @error="handleImageError">
+                                            <div class="image-index">第{{ index + 1 }}张</div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
-            </el-card>
+                </el-card>
+                <el-empty v-else description="暂无待审核商品"></el-empty>
+            </div>
 
-            <!-- 分页 - 固定在底部 -->
-            <div style="height: 80px;"></div>
-            <el-pagination
-                v-model:current-page="pagination.page"
-                v-model:page-size="pagination.page_size"
-                :page-sizes="[10, 20, 50, 100]"
-                :total="pagination.total"
-                :layout="isMobile ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper'"
-                @size-change="handleSizeChange"
-                @current-change="handlePageChange"
-                class="pagination-sticky"
-            ></el-pagination>
+            <div v-else>
+                <!-- 桌面端：保持原有的列表展示 -->
+                <el-card 
+                    v-for="goods in goodsList" 
+                    :key="goods.id" 
+                    :id="`goods-card-${goods.id}`"
+                    class="goods-card"
+                    :class="{ 
+                        'selected': selectedGoods.includes(goods.id),
+                        'discarded': goods.review_status === 2,
+                        'approved': goods.review_status === 1
+                    }"
+                    :style="goods.review_status === 2 ? { 
+                        '--el-card-bg-color': '#d3d3d3',
+                        'background': '#d3d3d3',
+                        'background-color': '#d3d3d3'
+                    } : (goods.review_status === 1 ? {
+                        '--el-card-bg-color': '#f0f9eb',
+                        'background': '#f0f9eb',
+                        'background-color': '#f0f9eb'
+                    } : {})"
+                >
+                    <template #header>
+                        <div 
+                            class="goods-header-row"
+                            :style="goods.review_status === 2 ? { 'background-color': '#d3d3d3', 'padding': '20px', 'margin': '-20px -20px 0 -20px' } : {}"
+                        >
+                            <div class="goods-header-left">
+                                <el-checkbox 
+                                    :model-value="selectedGoods.includes(goods.id)"
+                                    @change="(checked) => handleCheckboxChange(goods.id, checked)"
+                                >
+                                    <strong>商品ID: {{ goods.goods_id }}</strong>
+                                </el-checkbox>
+                                <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266; display: flex; align-items: center; gap: 10px;">
+                                    <span>{{ goods.title }}</span>
+                                    <el-button 
+                                        v-if="goods.review_status === 0"
+                                        type="success" 
+                                        size="small" 
+                                        @click="handleApprove(goods)"
+                                        style="padding: 4px 8px; height: auto;"
+                                    >
+                                        审核通过
+                                    </el-button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <div 
+                        class="goods-content-row"
+                        :style="goods.review_status === 2 ? { 
+                            'background-color': '#f5f5f5',
+                            'background': '#f5f5f5',
+                            'padding': '20px',
+                            'margin': '-20px'
+                        } : {}"
+                    >
+                        <!-- 左侧：主图（桌面端） -->
+                        <div class="main-image-wrapper">
+                            <div class="main-image-item">
+                                <div style="margin-bottom: 8px;">
+                                    <strong style="color: #409eff; font-size: 14px;">主图（轮播图第1张）</strong>
+                                </div>
+                                <div class="main-image-preview clickable-image" @click="showImageActionDialog(goods, 0)">
+                                    <img 
+                                        :src="(goods.image_list && goods.image_list.length > 0) ? goods.image_list[0] : goods.main_image" 
+                                        :alt="goods.title" 
+                                        @error="handleImageError"
+                                    >
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 右侧：标题、第三张轮播图（桌面端）和所有轮播图 -->
+                        <div class="goods-right-section">
+                            <div class="goods-images-section">
+                                <div class="third-image-container desktop-third-image">
+                                    <div style="margin-bottom: 5px; flex-shrink: 0;">
+                                        <strong style="color: #67c23a; font-size: 12px;">第3张</strong>
+                                    </div>
+                                    <div class="third-image-preview clickable-image" v-if="goods.image_list && goods.image_list.length >= 3" @click="showImageActionDialog(goods, 2)">
+                                        <img :src="goods.image_list[2]" :alt="goods.title" @error="handleImageError">
+                                    </div>
+                                    <div v-else style="width: 200px; height: 300px; display: flex; align-items: center; justify-content: center; color: #909399; border: 2px dashed #e4e7ed; border-radius: 4px; font-size: 12px;">
+                                        暂无
+                                    </div>
+                                </div>
+
+                                <div class="all-images-container">
+                                    <div style="margin-bottom: 5px; flex-shrink: 0;">
+                                        <strong style="color: #606266; font-size: 12px;">所有轮播图</strong>
+                                    </div>
+                                    <div class="all-images-preview" v-if="goods.image_list && goods.image_list.length > 0" style="padding-right: 5px;">
+                                        <div 
+                                            v-for="(img, index) in goods.image_list" 
+                                            :key="`${goods.id}-${index}`"
+                                            class="all-images-item clickable-image"
+                                            :class="{ 
+                                                'third-image': index === 2,
+                                                'selectable': selectingImageMap[goods.id] !== undefined && selectingImageMap[goods.id] !== null,
+                                                'selected': selectingImageMap[goods.id] === index
+                                            }"
+                                            @click.stop="selectingImageMap[goods.id] ? handleImageSelect(goods, index, $event) : showImageActionDialog(goods, index)"
+                                        >
+                                            <img :src="img" :alt="`图片${index + 1}`" @error="handleImageError">
+                                            <div class="image-index">第{{ index + 1 }}张</div>
+                                        </div>
+                                    </div>
+                                    <div v-else style="color: #909399; padding: 20px; text-align: center; font-size: 12px;">
+                                        暂无轮播图
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </el-card>
+            </div>
+
+            <!-- 分页 - 仅桌面端显示 -->
+            <div v-if="!isMobile">
+                <div style="height: 80px;"></div>
+                <el-pagination
+                    v-model:current-page="pagination.page"
+                    v-model:page-size="pagination.page_size"
+                    :page-sizes="[10, 20, 50, 100]"
+                    :total="pagination.total"
+                    layout="total, sizes, prev, pager, next, jumper"
+                    @size-change="handleSizeChange"
+                    @current-change="handlePageChange"
+                    class="pagination-sticky"
+                ></el-pagination>
+            </div>
         </div>
 
         <!-- 滚动按钮 -->
@@ -1151,6 +1191,6 @@
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
-    <script src="app.js?v=19"></script>
+    <script src="app.js?v=20"></script>
 </body>
 </html>

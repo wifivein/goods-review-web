@@ -374,6 +374,9 @@ def get_goods_list():
         page_size = int(request.args.get('page_size', 20))
         search = request.args.get('search', '').strip()
         user_id = request.args.get('user_id', '').strip()
+        review_status = request.args.get('review_status')
+        process_status = request.args.get('process_status')
+        order_by = request.args.get('order_by', 'time_desc')
         
         offset = (page - 1) * page_size
         
@@ -392,8 +395,21 @@ def get_goods_list():
         if user_id:
             where_conditions.append("master_user_id = %s")
             params.append(user_id)
+
+        if review_status is not None:
+            where_conditions.append("review_status = %s")
+            params.append(review_status)
+
+        if process_status is not None:
+            where_conditions.append("process_status = %s")
+            params.append(process_status)
         
         where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        
+        # 排序逻辑
+        order_clause = "ORDER BY create_time DESC"
+        if order_by == 'id_asc':
+            order_clause = "ORDER BY id ASC"
         
         # 查询总数
         count_sql = f"SELECT COUNT(*) as total FROM temu_goods_v2 {where_clause}"
@@ -401,7 +417,6 @@ def get_goods_list():
         total = cursor.fetchone()['total']
         
         # 查询列表
-        # 使用别名映射到前端习惯的字段名
         list_sql = f"""
             SELECT 
                 id, master_user_id as user_id, product_id as goods_id, 
@@ -413,7 +428,7 @@ def get_goods_list():
                 sale_count as soldcount
             FROM temu_goods_v2 
             {where_clause}
-            ORDER BY create_time DESC
+            {order_clause}
             LIMIT %s OFFSET %s
         """
         params.extend([page_size, offset])

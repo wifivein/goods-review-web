@@ -69,7 +69,9 @@ function initApp() {
             // 移动端检测
             isMobile: window.innerWidth <= 768,
             // 搜索栏显示状态（移动端默认隐藏）
-            searchBarVisible: window.innerWidth > 768
+            searchBarVisible: window.innerWidth > 768,
+            // 移动端当前显示的商品索引（仅用于移动端模式）
+            mobileCurrentIndex: 0
         };
     },
     mounted() {
@@ -172,6 +174,13 @@ function initApp() {
                     page_size: this.pagination.page_size,
                     ...this.searchForm
                 };
+                
+                // 移动端特殊逻辑：如果是移动端且没有搜索关键词，默认只查待审核商品
+                if (this.isMobile && !this.searchForm.search && !this.searchForm.user_id) {
+                    params.review_status = 0;
+                    params.process_status = 2;
+                    params.order_by = 'id_asc'; // 按 api_id 顺序
+                }
                 
                 const response = await axios.get(`${API_BASE_URL}/goods/list`, { params });
                 

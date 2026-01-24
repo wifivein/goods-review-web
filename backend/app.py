@@ -232,34 +232,41 @@ def get_statistics():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 统计已废弃商品（使用 review_status 或标题包含关键字）
-        discarded_sql = """
-            SELECT COUNT(*) as count 
-            FROM temu_goods_v2 
-            WHERE review_status = 2 OR product_name LIKE '%⚠️已废弃%' OR product_name LIKE '%⚠️废弃%'
-        """
-        cursor.execute(discarded_sql)
-        discarded_count = cursor.fetchone()['count']
-        
-        # 统计预处理中（process_status = 0 或 1）
+        # 1. 预处理（process_status = 0 或 1）
         preprocessing_sql = """
             SELECT COUNT(*) as count
             FROM temu_goods_v2
             WHERE process_status IN (0, 1)
-            AND review_status != 2
         """
         cursor.execute(preprocessing_sql)
         preprocessing_count = cursor.fetchone()['count']
         
-        # 统计待上传（process_status = 2）
+        # 2. 待审核（process_status = 2 且 review_status = 0）
+        pending_review_sql = """
+            SELECT COUNT(*) as count
+            FROM temu_goods_v2
+            WHERE process_status = 2 AND review_status = 0
+        """
+        cursor.execute(pending_review_sql)
+        pending_review_count = cursor.fetchone()['count']
+        
+        # 3. 待上传（process_status = 2 且 review_status = 1）
         pending_upload_sql = """
             SELECT COUNT(*) as count
             FROM temu_goods_v2
-            WHERE process_status = 2
-            AND review_status != 2
+            WHERE process_status = 2 AND review_status = 1
         """
         cursor.execute(pending_upload_sql)
         pending_upload_count = cursor.fetchone()['count']
+        
+        # 4. 已废弃（process_status = 2 且 review_status = 2）
+        discarded_sql = """
+            SELECT COUNT(*) as count 
+            FROM temu_goods_v2 
+            WHERE process_status = 2 AND review_status = 2
+        """
+        cursor.execute(discarded_sql)
+        discarded_count = cursor.fetchone()['count']
         
         cursor.close()
         conn.close()
@@ -269,6 +276,7 @@ def get_statistics():
             'message': 'success',
             'data': {
                 'preprocessing': preprocessing_count,
+                'pending_review': pending_review_count,
                 'pending_upload': pending_upload_count,
                 'discarded': discarded_count
             }
@@ -287,12 +295,12 @@ def get_first_pending_upload():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 查询第一个待上传商品（process_status=2，排除已废弃的）
+        # 查询第一个待上传商品（process_status=2，review_status=1）
         sql = """
             SELECT id, product_id as goods_id, create_time
             FROM temu_goods_v2
             WHERE process_status = 2
-            AND review_status != 2
+            AND review_status = 1
             ORDER BY create_time DESC
             LIMIT 1
         """
@@ -401,6 +409,7 @@ def get_goods_list():
                 carousel_pic_urls as image_list,
                 create_time as create_time_str, update_time,
                 is_publish as isupload, process_status as uploadstatus, 
+                review_status,
                 sale_count as soldcount
             FROM temu_goods_v2 
             {where_clause}
@@ -470,6 +479,7 @@ def get_goods_detail(goods_id):
                 sku_list, sku_specs as spec,
                 create_time, update_time,
                 is_publish as isupload, process_status as uploadstatus,
+                review_status,
                 sale_count as soldcount, origin_product_url as url,
                 group_id, ref_product_template_id, ref_product_size_template_id,
                 extcode, create_by, create_dept_id, malls,
@@ -663,6 +673,45 @@ def batch_save_goods():
         return jsonify({
             'code': -1,
             'message': f'批量保存失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/goods/approve', methods=['POST'])
+def approve_goods():
+    """审核通过商品（review_status从0变成1）"""
+    try:
+        data = request.json
+        goods_id = data.get('id')
+        
+        if not goods_id:
+            return jsonify({
+                'code': -1,
+                'message': '商品ID不能为空'
+            }), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 更新审核状态
+        update_sql = "UPDATE temu_goods_v2 SET review_status = 1 WHERE id = %s"
+        cursor.execute(update_sql, (goods_id,))
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        # 回存到外部系统
+        save_result = save_goods_to_external_api(goods_id)
+        
+        return jsonify({
+            'code': 0,
+            'message': '商品已审核通过' + ('，回存成功' if save_result['success'] else '，但回存失败'),
+            'data': {'id': goods_id, 'review_status': 1}
+        })
+    except Exception as e:
+        return jsonify({
+            'code': -1,
+            'message': f'操作失败: {str(e)}'
         }), 500
 
 

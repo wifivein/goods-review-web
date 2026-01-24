@@ -154,6 +154,23 @@
         .goods-card.discarded .all-images-container {
             background-color: #d3d3d3 !important;
         }
+        /* 审核通过商品样式 - 浅绿色背景 */
+        .goods-card.approved {
+            background-color: #f0f9eb !important;
+        }
+        .goods-card.approved .el-card__body,
+        .goods-card.approved .el-card__header {
+            background-color: #f0f9eb !important;
+        }
+        .goods-card.approved .goods-content-row,
+        .goods-card.approved .main-image-preview,
+        .goods-card.approved .goods-right-section,
+        .goods-card.approved .goods-title-section,
+        .goods-card.approved .goods-images-section,
+        .goods-card.approved .third-image-container,
+        .goods-card.approved .all-images-container {
+            background-color: #f0f9eb !important;
+        }
         .image-preview {
             display: flex;
             gap: 10px;
@@ -782,6 +799,10 @@
                         <div class="stat-label">预处理</div>
                         <div class="stat-value">{{ statistics.preprocessing || 0 }}</div>
                     </div>
+                    <div class="stat-item">
+                        <div class="stat-label">待审核</div>
+                        <div class="stat-value">{{ statistics.pending_review || 0 }}</div>
+                    </div>
                     <div class="stat-item" style="cursor: pointer;" @click="scrollToFirstPendingUpload" title="点击跳转到第一条待上传商品">
                         <div class="stat-label">待上传</div>
                         <div class="stat-value">{{ statistics.pending_upload || 0 }}</div>
@@ -846,13 +867,18 @@
                 class="goods-card"
                 :class="{ 
                     'selected': selectedGoods.includes(goods.id),
-                    'discarded': goods.title && (goods.title.includes('⚠️已废弃') || goods.title.includes('⚠️废弃'))
+                    'discarded': goods.review_status === 2,
+                    'approved': goods.review_status === 1
                 }"
-                :style="goods.title && (goods.title.includes('⚠️已废弃') || goods.title.includes('⚠️废弃')) ? { 
+                :style="goods.review_status === 2 ? { 
                     '--el-card-bg-color': '#d3d3d3',
                     'background': '#d3d3d3',
                     'background-color': '#d3d3d3'
-                } : {}"
+                } : (goods.review_status === 1 ? {
+                    '--el-card-bg-color': '#f0f9eb',
+                    'background': '#f0f9eb',
+                    'background-color': '#f0f9eb'
+                } : {})"
             >
                 <template #header>
                     <div 
@@ -866,8 +892,17 @@
                             >
                                 <strong>商品ID: {{ goods.goods_id }}</strong>
                             </el-checkbox>
-                            <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266;">
-                                {{ goods.title }}
+                            <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266; display: flex; align-items: center; gap: 10px;">
+                                <span>{{ goods.title }}</span>
+                                <el-button 
+                                    v-if="goods.review_status === 0"
+                                    type="success" 
+                                    size="small" 
+                                    @click="handleApprove(goods)"
+                                    style="padding: 4px 8px; height: auto;"
+                                >
+                                    审核通过
+                                </el-button>
                             </div>
                         </div>
                         <!-- 操作按钮已隐藏，改为点击图片弹出操作选择 -->
@@ -1056,6 +1091,14 @@
                         :disabled="currentActionImageIndex === 0"
                     >
                         更换主图
+                    </el-button>
+                    <el-button 
+                        v-if="currentActionGoods.review_status === 0"
+                        type="success" 
+                        size="large"
+                        @click="handleActionFromDialog('approve')"
+                    >
+                        审核通过
                     </el-button>
                     <el-button 
                         type="success" 

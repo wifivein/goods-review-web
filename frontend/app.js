@@ -273,6 +273,9 @@ function initApp() {
                     console.error('更换主图失败:', error);
                     ElMessage.error('操作失败: ' + (error.message || '网络错误'));
                 }
+            } else if (action === 'approve') {
+                // 审核通过
+                await this.handleApprove(goods);
             } else if (action === 'replace-third') {
                 // 更换第3张图
                 if (imageIndex === 2) {
@@ -427,6 +430,27 @@ function initApp() {
                     console.error('废弃商品失败:', error);
                     ElMessage.error('操作失败: ' + (error.message || '网络错误'));
                 }
+            }
+        },
+        // 审核通过
+        async handleApprove(goods) {
+            try {
+                const response = await axios.post(`${API_BASE_URL}/goods/approve`, {
+                    id: goods.id
+                });
+                
+                if (response.data.code === 0) {
+                    ElMessage.success('商品已审核通过');
+                    // 刷新该商品的数据
+                    await this.refreshGoodsItem(goods.id);
+                    // 立即刷新统计数据
+                    this.loadStatistics();
+                } else {
+                    ElMessage.error(response.data.message || '操作失败');
+                }
+            } catch (error) {
+                console.error('审核商品失败:', error);
+                ElMessage.error('操作失败: ' + (error.message || '网络错误'));
             }
         },
         // 更换第3张图（保留作为备用，通过按钮调用）

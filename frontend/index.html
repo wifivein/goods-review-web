@@ -494,6 +494,24 @@
             transform: scale(0.98);
         }
 
+        /* 全屏原图 */
+        .fullscreen-image-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .fullscreen-image-overlay .fullscreen-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            cursor: pointer;
+        }
+
         /* ========== 移动端响应式适配 ========== */
         @media (max-width: 768px) {
             /* 顶部导航栏 - 移动端 */
@@ -897,7 +915,7 @@
                                     <strong style="color: #409eff; font-size: 14px;">主图</strong>
                                 </div>
                                 <div class="main-image-preview clickable-image" @click="showImageActionDialog(goodsList[0], 0)">
-                                    <img :src="(goodsList[0].image_list && goodsList[0].image_list.length > 0) ? goodsList[0].image_list[0] : goodsList[0].main_image" @error="handleImageError">
+                                    <img :src="getThumbnailUrl((goodsList[0].image_list && goodsList[0].image_list.length > 0) ? goodsList[0].image_list[0] : goodsList[0].main_image, 100)" @error="handleImageError">
                                 </div>
                             </div>
                             <div class="third-image-container mobile-third-image">
@@ -905,7 +923,7 @@
                                     <strong style="color: #67c23a; font-size: 12px;">第3张</strong>
                                 </div>
                                 <div class="third-image-preview clickable-image" v-if="goodsList[0].image_list && goodsList[0].image_list.length >= 3" @click="showImageActionDialog(goodsList[0], 2)">
-                                    <img :src="goodsList[0].image_list[2]" @error="handleImageError">
+                                    <img :src="getThumbnailUrl(goodsList[0].image_list[2], 100)" @error="handleImageError">
                                 </div>
                                 <div v-else class="empty-image-placeholder">暂无</div>
                             </div>
@@ -923,7 +941,7 @@
                                             class="all-images-item clickable-image"
                                             @click.stop="showImageActionDialog(goodsList[0], index)"
                                         >
-                                            <img :src="img" @error="handleImageError">
+                                            <img :src="getThumbnailUrl(img, 100)" @error="handleImageError">
                                             <div class="image-index">第{{ index + 1 }}张</div>
                                         </div>
                                     </div>
@@ -1002,7 +1020,7 @@
                                 </div>
                                 <div class="main-image-preview clickable-image" @click="showImageActionDialog(goods, 0)">
                                     <img 
-                                        :src="(goods.image_list && goods.image_list.length > 0) ? goods.image_list[0] : goods.main_image" 
+                                        :src="getThumbnailUrl((goods.image_list && goods.image_list.length > 0) ? goods.image_list[0] : goods.main_image)" 
                                         :alt="goods.title" 
                                         @error="handleImageError"
                                     >
@@ -1018,7 +1036,7 @@
                                         <strong style="color: #67c23a; font-size: 12px;">第3张</strong>
                                     </div>
                                     <div class="third-image-preview clickable-image" v-if="goods.image_list && goods.image_list.length >= 3" @click="showImageActionDialog(goods, 2)">
-                                        <img :src="goods.image_list[2]" :alt="goods.title" @error="handleImageError">
+                                        <img :src="getThumbnailUrl(goods.image_list[2])" :alt="goods.title" @error="handleImageError">
                                     </div>
                                     <div v-else style="width: 200px; height: 300px; display: flex; align-items: center; justify-content: center; color: #909399; border: 2px dashed #e4e7ed; border-radius: 4px; font-size: 12px;">
                                         暂无
@@ -1041,7 +1059,7 @@
                                             }"
                                             @click.stop="selectingImageMap[goods.id] ? handleImageSelect(goods, index, $event) : showImageActionDialog(goods, index)"
                                         >
-                                            <img :src="img" :alt="`图片${index + 1}`" @error="handleImageError">
+                                            <img :src="getThumbnailUrl(img)" :alt="`图片${index + 1}`" @error="handleImageError">
                                             <div class="image-index">第{{ index + 1 }}张</div>
                                         </div>
                                     </div>
@@ -1107,13 +1125,18 @@
                     <div style="color: #909399; font-size: 14px; margin-bottom: 10px;">
                         对第{{ currentActionImageIndex + 1 }}张图片进行操作
                     </div>
-                    <div style="max-width: 200px; margin: 0 auto; border: 1px solid #e4e7ed; border-radius: 4px; overflow: hidden;">
+                    <div 
+                        class="dialog-image-preview clickable-image"
+                        style="max-width: 200px; margin: 0 auto; border: 1px solid #e4e7ed; border-radius: 4px; overflow: hidden; cursor: pointer;"
+                        @click.stop="openFullscreenImage(currentActionGoods.image_list[currentActionImageIndex])"
+                    >
                         <img 
-                            :src="currentActionGoods.image_list[currentActionImageIndex]" 
+                            :src="getThumbnailUrl(currentActionGoods.image_list[currentActionImageIndex], 300)" 
                             :alt="`图片${currentActionImageIndex + 1}`"
-                            style="width: 100%; height: auto; display: block;"
+                            style="width: 100%; height: auto; display: block; pointer-events: none;"
                             @error="handleImageError"
                         >
+                        <div style="font-size: 12px; color: #909399; text-align: center; padding: 4px 0;">点击查看大图</div>
                     </div>
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 10px;">
@@ -1162,6 +1185,21 @@
                 <el-button @click="imageActionDialogVisible = false">取消</el-button>
             </template>
         </el-dialog>
+
+        <!-- 全屏原图 -->
+        <div 
+            v-if="fullscreenImageVisible"
+            class="fullscreen-image-overlay"
+            @click="closeFullscreenImage"
+        >
+            <img 
+                :src="fullscreenImageUrl" 
+                alt="大图"
+                class="fullscreen-image"
+                @click.stop="closeFullscreenImage"
+                @error="handleImageError"
+            >
+        </div>
     </div>
 
     <!-- API 配置：根据部署环境修改此处的 API_BASE_URL -->
@@ -1184,6 +1222,6 @@
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
-    <script src="app.js?v=21"></script>
+    <script src="app.js?v=25"></script>
 </body>
 </html>

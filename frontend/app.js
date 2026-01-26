@@ -52,6 +52,9 @@ function initApp() {
             imageActionDialogVisible: false,
             currentActionGoods: null,
             currentActionImageIndex: null,
+            // 全屏原图
+            fullscreenImageVisible: false,
+            fullscreenImageUrl: '',
             // 加载状态
             saving: false,
             batchSaving: false,
@@ -454,7 +457,7 @@ function initApp() {
                 });
                 
                 if (response.data.code === 0) {
-                    ElMessage.success('商品已审核通过');
+                    ElMessage.success(response.data.message || '商品已审核通过');
                     // 移动端：直接加载下一条；PC端：刷新当前项
                     if (this.isMobile) {
                         await this.loadGoodsList();
@@ -687,11 +690,35 @@ function initApp() {
             // 修复：将"图片加载中文"改为"图片加载中"
             event.target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iI2U0ZTdlZCIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjE0IiBmaWxsPSIjOTA5Mzk5IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSI+5Zu+54mH5Yqg6L295LitPC90ZXh0Pjwvc3ZnPg==';
         },
-        // ESC键处理，退出图片选择状态
+        // 生成缩略图URL（添加缩略图参数，加快加载速度）
+        // size: 移动端列表 100x，桌面端列表 200x，弹窗 300x
+        getThumbnailUrl(url, size = 200) {
+            if (!url || typeof url !== 'string') return url;
+            const baseUrl = url.split('?')[0];
+            return `${baseUrl}?imageMogr2/thumbnail/${size}x`;
+        },
+        // 获取原图URL（去掉缩略图参数）
+        getOriginalUrl(url) {
+            if (!url || typeof url !== 'string') return url;
+            return url.split('?')[0];
+        },
+        // 全屏显示原图
+        openFullscreenImage(url) {
+            this.fullscreenImageUrl = this.getOriginalUrl(url);
+            this.fullscreenImageVisible = true;
+        },
+        closeFullscreenImage() {
+            this.fullscreenImageVisible = false;
+            this.fullscreenImageUrl = '';
+        },
+        // ESC键处理：优先关闭全屏，否则退出图片选择状态
         handleKeyDown(event) {
             if (event.key === 'Escape') {
-                // 清除所有商品的选择状态
-                this.selectingImageMap = {};
+                if (this.fullscreenImageVisible) {
+                    this.closeFullscreenImage();
+                } else {
+                    this.selectingImageMap = {};
+                }
             }
         },
         // 点击文档处理，点击非目标区域退出选择状态

@@ -30,8 +30,12 @@ DB_CONFIG = {
 
 # 外部 API 配置
 SAVE_API_URL = "https://gwfpod.com/api/collect/product/batch_update"
+INFRINGEMENT_API_URL = "https://gwfpod.com/api/collect/product/batch_infringement_detection"
 # 使用您抓包提供的新 Token
 DEFAULT_AUTH_TOKEN = "13bc0f9d096f277bcce36a25b274b74a0c7c6fe3"
+
+# 毛毯标准规格图 URL（审核通过时替换第 3 张图）
+BLANKET_SPEC_IMAGE_URL = "https://img.kwcdn.com/product/20195053a14/c2ddafb8-2eee-497c-9c81-c45254e903bf_800x800.png"
 
 
 def get_db_connection():
@@ -232,38 +236,39 @@ def get_statistics():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 1. 预处理（process_status = 0 或 1）
+        # 1. 预处理（process_status = 0 或 1，且未发布）
         preprocessing_sql = """
             SELECT COUNT(*) as count
             FROM temu_goods_v2
-            WHERE process_status IN (0, 1)
+            WHERE process_status IN (0, 1) AND is_publish = 0
         """
         cursor.execute(preprocessing_sql)
         preprocessing_count = cursor.fetchone()['count']
         
-        # 2. 待审核（process_status = 2 且 review_status = 0）
+        # 2. 待审核（process_status = 2 且 review_status = 0，且未发布）
         pending_review_sql = """
             SELECT COUNT(*) as count
             FROM temu_goods_v2
-            WHERE process_status = 2 AND review_status = 0
+            WHERE process_status = 2 AND review_status = 0 AND is_publish = 0
         """
         cursor.execute(pending_review_sql)
         pending_review_count = cursor.fetchone()['count']
         
-        # 3. 待上传（process_status = 2 且 review_status = 1）
+        # 3. 待上传（process_status = 2 且 review_status = 1，且未发布；排除侵权疑似/侵权 infringement_status=2,3）
         pending_upload_sql = """
             SELECT COUNT(*) as count
             FROM temu_goods_v2
-            WHERE process_status = 2 AND review_status = 1
+            WHERE process_status = 2 AND review_status = 1 AND is_publish = 0
+            AND (infringement_status IS NULL OR infringement_status NOT IN (2, 3))
         """
         cursor.execute(pending_upload_sql)
         pending_upload_count = cursor.fetchone()['count']
         
-        # 4. 已废弃（process_status = 2 且 review_status = 2）
+        # 4. 已废弃（process_status = 2 且 review_status = 2，且未发布）
         discarded_sql = """
             SELECT COUNT(*) as count 
             FROM temu_goods_v2 
-            WHERE process_status = 2 AND review_status = 2
+            WHERE process_status = 2 AND review_status = 2 AND is_publish = 0
         """
         cursor.execute(discarded_sql)
         discarded_count = cursor.fetchone()['count']
@@ -295,12 +300,14 @@ def get_first_pending_upload():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 查询第一个待上传商品（process_status=2，review_status=1）
+        # 查询第一个待上传商品（process_status=2，review_status=1，且未发布；排除侵权疑似/侵权）
         sql = """
             SELECT id, product_id as goods_id, create_time
             FROM temu_goods_v2
             WHERE process_status = 2
             AND review_status = 1
+            AND is_publish = 0
+            AND (infringement_status IS NULL OR infringement_status NOT IN (2, 3))
             ORDER BY create_time DESC
             LIMIT 1
         """
@@ -317,7 +324,9 @@ def get_first_pending_upload():
                     rank_sql = """
                         SELECT COUNT(*) as cnt
                         FROM temu_goods_v2
-                        WHERE create_time > %s
+                        WHERE process_status = 2 AND review_status = 1 AND is_publish = 0
+                        AND (infringement_status IS NULL OR infringement_status NOT IN (2, 3))
+                        AND create_time > %s
                     """
                     cursor.execute(rank_sql, (create_time,))
                     rank_result = cursor.fetchone()
@@ -386,6 +395,11 @@ def get_goods_list():
         # 构建查询条件
         where_conditions = []
         params = []
+        
+        # 只显示未发布的商品（is_publish = 0）
+        where_conditions.append("is_publish = 0")
+        # 排除侵权检测为疑似/侵权（infringement_status=2,3）的商品，不再展示、不再上传
+        where_conditions.append("(infringement_status IS NULL OR infringement_status NOT IN (2, 3))")
         
         if search:
             where_conditions.append("product_name LIKE %s")
@@ -695,41 +709,115 @@ def batch_save_goods():
 
 @app.route('/api/goods/approve', methods=['POST'])
 def approve_goods():
-    """审核通过商品（review_status从0变成1）"""
+    """审核通过商品（review_status 从 0 变成 1）。毛毯类替换第 3 张图为标准规格图；不足 3 张则作废。"""
     try:
         data = request.json
         goods_id = data.get('id')
-        
+
         if not goods_id:
-            return jsonify({
-                'code': -1,
-                'message': '商品ID不能为空'
-            }), 400
-        
+            return jsonify({'code': -1, 'message': '商品ID不能为空'}), 400
+
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # 更新审核状态
-        update_sql = "UPDATE temu_goods_v2 SET review_status = 1 WHERE id = %s"
-        cursor.execute(update_sql, (goods_id,))
+        sql = "SELECT id, api_id, product_name, carousel_pic_urls, sku_list FROM temu_goods_v2 WHERE id = %s"
+        cursor.execute(sql, (goods_id,))
+        goods = cursor.fetchone()
+
+        if not goods:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': -1, 'message': '商品不存在'}), 404
+
+        image_list = []
+        if goods.get('carousel_pic_urls'):
+            raw = goods['carousel_pic_urls']
+            image_list = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(image_list, list):
+            image_list = []
+
+        # 不足 3 张：作废处理，不替换、不回存
+        if len(image_list) < 3:
+            title = (goods.get('product_name') or '') if isinstance(goods.get('product_name'), str) else ''
+            if '【⚠️已废弃】' not in title and '⚠️废弃' not in title:
+                title = '【⚠️已废弃】' + title
+            update_sql = "UPDATE temu_goods_v2 SET product_name = %s, review_status = 2 WHERE id = %s"
+            cursor.execute(update_sql, (title, goods_id))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return jsonify({
+                'code': 0,
+                'message': '图片不足 3 张，已按废弃处理',
+                'data': {'id': goods_id, 'review_status': 2}
+            })
+
+        # 替换第 3 张为标准规格图
+        old_3rd = image_list[2]
+        old_3rd_base = (old_3rd or '').split('?')[0]
+        image_list[2] = BLANKET_SPEC_IMAGE_URL
+        new_carousel = json.dumps(image_list, ensure_ascii=False)
+
+        sku_list = []
+        if goods.get('sku_list'):
+            raw = goods['sku_list']
+            sku_list = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(sku_list, list):
+            sku_list = []
+
+        if sku_list:
+            updated = []
+            for s in sku_list:
+                if not isinstance(s, dict):
+                    updated.append(s)
+                    continue
+                u = copy.deepcopy(s)
+                hit = False
+                if old_3rd_base:
+                    for f in ('pic_url', 'pic', 'image'):
+                        v = (u.get(f) or '').strip()
+                        if v and (v.split('?')[0] == old_3rd_base):
+                            hit = True
+                            break
+                if hit:
+                    u['pic_url'] = u['pic'] = u['image'] = BLANKET_SPEC_IMAGE_URL
+                updated.append(u)
+            sku_list = ensure_sku_dimensions(updated)
+            update_sql = "UPDATE temu_goods_v2 SET carousel_pic_urls = %s, sku_list = %s, review_status = 1 WHERE id = %s"
+            cursor.execute(update_sql, (new_carousel, json.dumps(sku_list, ensure_ascii=False), goods_id))
+        else:
+            update_sql = "UPDATE temu_goods_v2 SET carousel_pic_urls = %s, review_status = 1 WHERE id = %s"
+            cursor.execute(update_sql, (new_carousel, goods_id))
         conn.commit()
-        
         cursor.close()
         conn.close()
-        
-        # 回存到外部系统
+
         save_result = save_goods_to_external_api(goods_id)
-        
+        msg = '商品已审核通过，第3张已替换为标准规格图' + ('，回存成功' if save_result['success'] else '，但回存失败')
+
+        api_id = goods.get('api_id')
+        infringement_ok = False
+        if api_id is not None:
+            try:
+                auth = os.getenv('AUTH_TOKEN', DEFAULT_AUTH_TOKEN)
+                r = requests.post(
+                    INFRINGEMENT_API_URL,
+                    json={'ids': [int(api_id)]},
+                    headers={'Content-Type': 'application/json', 'Authorization': auth},
+                    timeout=10
+                )
+                infringement_ok = 200 <= r.status_code < 300
+            except Exception as e:
+                print(f"[WARN] 侵权检测提交失败 api_id={api_id}: {e}")
+        if infringement_ok:
+            msg += '，侵权检测已提交'
+
         return jsonify({
             'code': 0,
-            'message': '商品已审核通过' + ('，回存成功' if save_result['success'] else '，但回存失败'),
+            'message': msg,
             'data': {'id': goods_id, 'review_status': 1}
         })
     except Exception as e:
-        return jsonify({
-            'code': -1,
-            'message': f'操作失败: {str(e)}'
-        }), 500
+        return jsonify({'code': -1, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/api/goods/discard', methods=['POST'])

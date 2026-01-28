@@ -6,8 +6,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.backend
     container_name: goods_review_backend
-    ports:
-      - "5001:5000"
+    # 移除端口映射，统一通过 nginx (8080) 访问
+    # ports:
+    #   - "5001:5000"
     environment:
       - DB_HOST=${DB_HOST:-172.17.0.1}
       - DB_PORT=${DB_PORT:-3307}

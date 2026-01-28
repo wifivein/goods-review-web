@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lovart设计图审核</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f7fa;
+        }
+        .app-container {
+            min-height: 100vh;
+            padding-top: 80px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+        }
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin: 0;
+        }
+        .header-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .stat-badge {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .main-content {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .design-card {
+            background: white;
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+        }
+        .design-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e4e7ed;
+        }
+        .design-info {
+            flex: 1;
+        }
+        .design-info h3 {
+            font-size: 18px;
+            color: #303133;
+            margin-bottom: 8px;
+        }
+        .design-meta {
+            display: flex;
+            gap: 20px;
+            font-size: 14px;
+            color: #909399;
+        }
+        .design-status {
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .status-generating {
+            background: #f4f4f5;
+            color: #909399;
+        }
+        .status-completed {
+            background: #e1f3d8;
+            color: #67c23a;
+        }
+        .status-ai-selected {
+            background: #ecf5ff;
+            color: #409eff;
+        }
+        .status-approved {
+            background: #e1f3d8;
+            color: #67c23a;
+        }
+        .status-skipped {
+            background: #fdf6ec;
+            color: #e6a23c;
+        }
+        .status-failed {
+            background: #fef0f0;
+            color: #f56c6c;
+        }
+        .status-tab-closed {
+            background: #f4f4f5;
+            color: #909399;
+        }
+        .status-downloaded {
+            background: #e8f5e9;
+            color: #4caf50;
+        }
+        
+        /* PC端：画廊模式布局 */
+        .gallery-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-top: 20px;
+            min-height: 600px;
+        }
+        .gallery-container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        .gallery-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #303133;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .gallery-main {
+            flex: 1;
+            display: flex;
+            gap: 15px;
+            min-height: 0;
+            align-items: flex-start;
+        }
+        .thumbnail-list {
+            width: 80px;
+            flex-shrink: 0;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .thumbnail-item {
+            border: 2px solid #e4e7ed;
+            border-radius: 4px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.3s;
+            flex-shrink: 0;
+            width: 100%;
+            aspect-ratio: 1;
+        }
+        .thumbnail-item:hover {
+            border-color: #409eff;
+            transform: scale(1.05);
+        }
+        .thumbnail-item.active {
+            border-color: #409eff;
+            border-width: 3px;
+        }
+        .thumbnail-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        .thumbnail-label {
+            padding: 2px 4px;
+            background: #f5f7fa;
+            text-align: center;
+            font-size: 10px;
+            color: #606266;
+            line-height: 1.2;
+        }
+        .large-image-display {
+            flex: 1;
+            min-width: 0;
+            border: 2px solid #e4e7ed;
+            border-radius: 6px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #fafafa;
+            height: 100%;
+            max-height: calc(80px * 12 + 6px * 11);
+        }
+        .large-image-display img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        .design-thumbnail-item {
+            position: relative;
+        }
+        .design-thumbnail-item.selected {
+            border-color: #67c23a !important;
+            border-width: 3px !important;
+        }
+        .ai-recommendation {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            background: #409eff;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            z-index: 10;
+        }
+        
+        /* 操作按钮区域 */
+        .action-buttons {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 2px solid #e4e7ed;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        .action-buttons .el-button {
+            min-width: 120px;
+        }
+        
+        /* 移动端：上下画廊布局 */
+        @media (max-width: 768px) {
+            .gallery-section {
+                grid-template-columns: 1fr;
+                gap: 20px;
+                min-height: auto;
+            }
+            .gallery-main {
+                flex-direction: column;
+                min-height: 400px;
+            }
+            .thumbnail-list {
+                width: 100%;
+                flex-direction: row;
+                overflow-x: auto;
+                overflow-y: hidden;
+                padding-bottom: 10px;
+            }
+            .thumbnail-item {
+                width: 80px;
+                flex-shrink: 0;
+            }
+            .large-image-display {
+                min-height: 300px;
+            }
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #909399;
+        }
+        .empty-state-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #909399;
+        }
+        .pagination-wrapper {
+            margin-top: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .refresh-btn {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app" class="app-container">
+        <div class="header">
+            <div class="header-content">
+                <h1>🎨 Lovart设计图审核</h1>
+                <div class="header-actions">
+                    <div class="stat-badge">全部: {{ totalCount }} | 待审核: {{ pendingCount }}</div>
+                    <el-button size="small" @click="loadDesignList" :loading="loading" circle>
+                        <el-icon><Refresh /></el-icon>
+                    </el-button>
+                </div>
+            </div>
+        </div>
+        <div class="main-content">
+            <div class="refresh-btn">
+                <el-button @click="loadDesignList" :loading="loading" type="primary">
+                    <el-icon><Refresh /></el-icon>
+                    刷新列表
+                </el-button>
+            </div>
+            <div v-if="loading" class="loading">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <p>加载中...</p>
+            </div>
+            <div v-else-if="designList.length === 0" class="empty-state">
+                <div class="empty-state-icon">📭</div>
+                <h3>暂无设计图记录</h3>
+                <p>当设计图生成完成后，会显示在这里</p>
+            </div>
+            <div v-else>
+                <div v-for="design in designList" :key="design.id" class="design-card">
+                    <div class="design-header">
+                        <div class="design-info">
+                            <h3>{{ design.product_name || '未命名商品' }}</h3>
+                            <div class="design-meta">
+                                <span>商品ID: {{ design.product_id }}</span>
+                                <span>分类: {{ design.category || '未分类' }}</span>
+                                <span>完成时间: {{ formatTime(design.completed_at) }}</span>
+                            </div>
+                        </div>
+                        <div class="design-status" :class="'status-' + design.status">
+                            {{ getStatusText(design.status) }}
+                        </div>
+                    </div>
+                    
+                    <!-- PC端：左右画廊模式，移动端：上下画廊模式 -->
+                    <div class="gallery-section">
+                        <!-- 左侧/上方：原图画廊 -->
+                        <div class="gallery-container">
+                            <div class="gallery-title">
+                                <span>📷</span>
+                                <span>商品原图</span>
+                            </div>
+                            <div class="gallery-main">
+                                <div class="thumbnail-list">
+                                    <div 
+                                        v-for="(url, index) in design.original_images_urls" 
+                                        :key="index"
+                                        class="thumbnail-item"
+                                        :class="{ active: design.currentOriginalIndex === index }"
+                                        @click="design.currentOriginalIndex = index"
+                                    >
+                                        <img :src="getImageUrl(url)" :alt="`原图${index + 1}`" referrerpolicy="no-referrer" @error="handleImageError">
+                                        <div class="thumbnail-label">原图 {{ index + 1 }}</div>
+                                    </div>
+                                </div>
+                                <div class="large-image-display">
+                                    <img 
+                                        v-if="design.original_images_urls && design.original_images_urls.length > 0"
+                                        :src="getImageUrl(design.original_images_urls[design.currentOriginalIndex || 0])" 
+                                        :alt="`原图${(design.currentOriginalIndex || 0) + 1}`"
+                                        referrerpolicy="no-referrer"
+                                        @error="handleImageError"
+                                    >
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 右侧/下方：设计图画廊 -->
+                        <div class="gallery-container">
+                            <div class="gallery-title">
+                                <span>✨</span>
+                                <span>生成的设计图</span>
+                                <span v-if="design.ai_recommendation" style="font-size: 12px; color: #409eff; margin-left: 10px;">
+                                    (AI推荐: 图{{ design.ai_recommendation }})
+                                </span>
+                            </div>
+                            <div class="gallery-main">
+                                <div class="thumbnail-list">
+                                    <div 
+                                        v-for="img in getDesignImagesList(design)" 
+                                        :key="img.index"
+                                        class="thumbnail-item design-thumbnail-item"
+                                        :class="{ active: design.currentDesignIndex === img.index, selected: design.selectedIndex === img.index }"
+                                        @click="selectDesignThumbnail(design, img.index)"
+                                    >
+                                        <div v-if="design.ai_recommendation === img.index" class="ai-recommendation">AI</div>
+                                        <img 
+                                            v-if="img.url"
+                                            :src="getImageUrl(img.url)" 
+                                            :alt="img.title"
+                                            referrerpolicy="no-referrer"
+                                            @error="handleImageError"
+                                        >
+                                        <div v-else style="padding: 20px; text-align: center; color: #909399; font-size: 12px;">
+                                            暂无
+                                        </div>
+                                        <div class="thumbnail-label">
+                                            {{ img.title }}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="large-image-display">
+                                    <img 
+                                        v-if="design.currentDesignIndex && getDesignImageUrl(design, design.currentDesignIndex)"
+                                        :src="getImageUrl(getDesignImageUrl(design, design.currentDesignIndex))" 
+                                        :alt="getDesignImageTitle(design, design.currentDesignIndex)"
+                                        referrerpolicy="no-referrer"
+                                        @error="handleImageError"
+                                    >
+                                    <div v-else style="padding: 40px; text-align: center; color: #909399;">
+                                        点击左侧缩略图查看大图
+                                    </div>
+                                </div>
+                            </div>
+                            <div v-if="design.ai_reason && design.currentDesignIndex === design.ai_recommendation" 
+                                 style="margin-top: 15px; padding: 10px; background: #ecf5ff; border-radius: 4px; font-size: 13px; color: #606266;">
+                                <strong>AI推荐理由:</strong> {{ design.ai_reason }}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 操作按钮：有设计图可选且状态为可审核时显示（含 generating/tab_closed/completed/ai_selected） -->
+                    <div v-if="isPendingStatus(design)" class="action-buttons">
+                        <el-button 
+                            type="success" 
+                            :disabled="!design.selectedIndex"
+                            :loading="design.approving"
+                            @click="approveDesign(design)"
+                        >
+                            <el-icon><Check /></el-icon>
+                            选定这张
+                        </el-button>
+                        <el-button 
+                            type="warning"
+                            :loading="design.failing"
+                            @click="failDesign(design)"
+                        >
+                            <el-icon><Close /></el-icon>
+                            放弃选择，人工调整
+                        </el-button>
+                    </div>
+                </div>
+            </div>
+            <!-- 分页 -->
+            <div v-if="designList.length > 0" class="pagination-wrapper">
+                <el-pagination
+                    v-model:current-page="pagination.page"
+                    v-model:page-size="pagination.limit"
+                    :page-sizes="[10, 20, 50, 100]"
+                    :total="pagination.total"
+                    layout="total, sizes, prev, pager, next, jumper"
+                    @size-change="handleSizeChange"
+                    @current-change="handlePageChange"
+                />
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script>
+        const { createApp } = Vue;
+        const { ElMessage, ElMessageBox } = ElementPlus;
+
+        const API_BASE_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:8080/api'
+            : '/api';
+
+        createApp({
+            data() {
+                return {
+                    designList: [],
+                    loading: false,
+                    totalCount: 0,
+                    pendingCount: 0,
+                    pagination: {
+                        page: 1,
+                        limit: 20,
+                        total: 0
+                    }
+                };
+            },
+            mounted() {
+                this.loadDesignList();
+            },
+            methods: {
+                // 获取图片URL（移动端对Lovart图片使用代理，PC端直接使用）
+                getImageUrl(url) {
+                    if (!url) return '';
+                    // 检测是否是Lovart的图片
+                    const isLovartImage = url.includes('lovart.ai') || url.includes('a.lovart.ai');
+                    // 检测是否是移动端
+                    const isMobile = window.innerWidth <= 768;
+                    
+                    // 只在移动端且是Lovart图片时使用代理
+                    if (isMobile && isLovartImage) {
+                        return `${API_BASE_URL}/image/proxy?url=${encodeURIComponent(url)}`;
+                    }
+                    return url;
+                },
+                async loadDesignList() {
+                    this.loading = true;
+                    try {
+                        const response = await axios.get(`${API_BASE_URL}/design/pending-review`, {
+                            params: {
+                                page: this.pagination.page,
+                                limit: this.pagination.limit
+                            }
+                        });
+                        if (response.data.code === 0) {
+                            const data = response.data.data;
+                            this.designList = (data.list || []).map(item => ({
+                                ...item,
+                                currentOriginalIndex: 0,
+                                currentDesignIndex: null,
+                                selectedIndex: null,
+                                approving: false,
+                                failing: false
+                            }));
+                            this.pagination.total = data.total || 0;
+                            this.totalCount = data.total || 0;
+                            this.pendingCount = data.pending_total || 0;
+                        } else {
+                            ElMessage.error(response.data.message || '加载失败');
+                        }
+                    } catch (error) {
+                        console.error('加载设计图列表失败:', error);
+                        ElMessage.error('加载失败，请检查网络连接');
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                handleSizeChange(size) {
+                    this.pagination.limit = size;
+                    this.pagination.page = 1;
+                    this.loadDesignList();
+                },
+                handlePageChange(page) {
+                    this.pagination.page = page;
+                    this.loadDesignList();
+                },
+                selectDesignThumbnail(design, index) {
+                    // 切换大图显示
+                    design.currentDesignIndex = design.currentDesignIndex === index ? null : index;
+                    // 同时选中（用于提交）
+                    design.selectedIndex = index;
+                },
+                async approveDesign(design) {
+                    if (!design.selectedIndex) {
+                        ElMessage.warning('请先选择一张设计图');
+                        return;
+                    }
+                    
+                    try {
+                        await ElMessageBox.confirm(
+                            `确定要选定第${design.selectedIndex}张设计图吗？`,
+                            '确认操作',
+                            {
+                                confirmButtonText: '确定',
+                                cancelButtonText: '取消',
+                                type: 'info'
+                            }
+                        );
+                        
+                        design.approving = true;
+                        const response = await axios.post(`${API_BASE_URL}/design/approve`, {
+                            id: design.id,
+                            selected_image_index: design.selectedIndex
+                        });
+                        
+                        if (response.data.code === 0) {
+                            ElMessage.success('设计图已选定，下载工作流将自动触发');
+                            this.loadDesignList();
+                        } else {
+                            ElMessage.error(response.data.message || '操作失败');
+                        }
+                    } catch (error) {
+                        if (error !== 'cancel') {
+                            console.error('选定设计图失败:', error);
+                            ElMessage.error('操作失败，请重试');
+                        }
+                    } finally {
+                        design.approving = false;
+                    }
+                },
+                async failDesign(design) {
+                    try {
+                        await ElMessageBox.confirm(
+                            '确定要放弃选择并标记为需人工调整吗？',
+                            '确认操作',
+                            {
+                                confirmButtonText: '确定',
+                                cancelButtonText: '取消',
+                                type: 'warning'
+                            }
+                        );
+                        
+                        design.failing = true;
+                        const response = await axios.post(`${API_BASE_URL}/design/fail`, {
+                            id: design.id
+                        });
+                        
+                        if (response.data.code === 0) {
+                            ElMessage.success('已标记为需人工调整');
+                            this.loadDesignList();
+                        } else {
+                            ElMessage.error(response.data.message || '操作失败');
+                        }
+                    } catch (error) {
+                        if (error !== 'cancel') {
+                            console.error('标记失败失败:', error);
+                            ElMessage.error('操作失败，请重试');
+                        }
+                    } finally {
+                        design.failing = false;
+                    }
+                },
+                formatTime(timeStr) {
+                    if (!timeStr) return '-';
+                    const date = new Date(timeStr);
+                    return date.toLocaleString('zh-CN');
+                },
+                handleImageError(event) {
+                    event.target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iI2U0ZTdlZCIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjE0IiBmaWxsPSIjOTA5Mzk5IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSI+5Zu+54mH5pyq5Yqg6L29PC90ZXh0Pjwvc3ZnPg==';
+                },
+                // 获取状态文本
+                getStatusText(status) {
+                    const statusMap = {
+                        'generating': '生成中',
+                        'completed': '生成完成',
+                        'ai_selected': 'AI已推荐',
+                        'approved': '已采纳',
+                        'skipped': '已跳过',
+                        'failed': '生成失败',
+                        'downloaded': '已下载',
+                        'tab_closed': 'Tab已关闭'
+                    };
+                    return statusMap[status] || status;
+                },
+                // 判断是否显示操作按钮：有设计图可选 且 状态为可审核（generating 有图、tab_closed、completed、ai_selected）
+                isPendingStatus(design) {
+                    const list = this.getDesignImagesList(design);
+                    if (!list || list.length === 0) return false;
+                    const s = design && design.status;
+                    return s === 'completed' || s === 'ai_selected' || s === 'tab_closed' || s === 'generating';
+                },
+                // 设计图列表：优先用新字段 design_images，为空则用老字段 design_image_1/2/3
+                getDesignImagesList(design) {
+                    let arr = design.design_images;
+                    if (typeof arr === 'string') {
+                        try { arr = arr ? JSON.parse(arr) : []; } catch (e) { arr = []; }
+                    }
+                    if (Array.isArray(arr) && arr.length > 0) {
+                        return arr.map((item, i) => ({
+                            url: item.url || '',
+                            title: item.title || `设计图${i + 1}`,
+                            index: i + 1
+                        }));
+                    }
+                    return [1, 2, 3].map(i => ({
+                        url: design[`design_image_${i}_url`] || '',
+                        title: design[`design_image_${i}_title`] || `设计图${i}`,
+                        index: i
+                    }));
+                },
+                // 按索引取单张设计图 url（index 为 1-based）
+                getDesignImageUrl(design, index) {
+                    const list = this.getDesignImagesList(design);
+                    const item = list.find(img => img.index === index);
+                    return item ? item.url : (design[`design_image_${index}_url`] || '');
+                },
+                getDesignImageTitle(design, index) {
+                    const list = this.getDesignImagesList(design);
+                    const item = list.find(img => img.index === index);
+                    return item ? item.title : (design[`design_image_${index}_title`] || `设计图${index}`);
+                }
+            }
+        }).use(ElementPlus).mount('#app');
+    </script>
+</body>
+</html>

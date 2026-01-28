@@ -1,8 +1,18 @@
 #!/bin/bash
 # 商品检查和修正系统 - 云服务器一键部署脚本
 # 参考数据库迁移脚本的部署方式
+# 用法: ./deploy_to_cloud.sh [--rebuild]
+#   --rebuild / -r  强制重新构建镜像并重新安装依赖（默认使用缓存，不重复下载依赖）
 
 set -e  # 遇到错误立即退出
+
+# 是否强制重建（重新下载依赖）
+REBUILD=""
+for arg in "$@"; do
+    case "$arg" in
+        --rebuild|-r) REBUILD="--no-cache"; break ;;
+    esac
+done
 
 # 云服务器配置（参考 migrate_database_to_cloud.sh）
 CLOUD_HOST="101.33.241.82"
@@ -104,7 +114,13 @@ docker-compose down || true
 docker rm -f goods_review_frontend goods_review_backend 2>/dev/null || true
 
 echo "构建并启动服务..."
-docker-compose build --no-cache
+if [ -n "$REBUILD" ]; then
+    echo "  (使用 --rebuild，将重新安装依赖)"
+    docker-compose build $REBUILD
+else
+    echo "  (使用缓存，依赖未变更时不会重新下载；需重装依赖请加 --rebuild)"
+    docker-compose build
+fi
 docker-compose up -d
 
 echo "等待服务启动..."

@@ -1271,5 +1271,470 @@ def replace_main_image():
         }), 500
 
 
+# ========== Lovart设计图审核相关API ==========
+
+@app.route('/api/design/save-tab-mapping', methods=['POST'])
+def save_tab_mapping():
+    """保存Tab与商品ID的映射关系（N8N提交工作流调用）"""
+    try:
+        data = request.json
+        tab_id = data.get('tab_id')
+        tab_url = data.get('tab_url')
+        tab_title = data.get('tab_title')
+        product_id = data.get('product_id')
+        product_name = data.get('product_name')
+        category = data.get('category')
+        original_image_url = data.get('original_image_url')  # 首图
+        original_images_urls = data.get('original_images_urls')  # 所有原图URL数组
+        
+        if not tab_id or not product_id:
+            return jsonify({
+                'code': -1,
+                'message': 'tab_id和product_id不能为空'
+            }), 400
+        
+        # 将原图URL数组转为JSON字符串
+        if isinstance(original_images_urls, list):
+            original_images_urls_json = json.dumps(original_images_urls, ensure_ascii=False)
+        elif isinstance(original_images_urls, str):
+            original_images_urls_json = original_images_urls
+        else:
+            original_images_urls_json = None
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 检查是否已存在（根据tab_id）
+        check_sql = "SELECT id FROM lovart_design_tab_mapping WHERE tab_id = %s"
+        cursor.execute(check_sql, (tab_id,))
+        existing = cursor.fetchone()
+        
+        if existing:
+            # 更新
+            update_sql = """
+                UPDATE lovart_design_tab_mapping 
+                SET tab_url = %s, tab_title = %s, product_id = %s, product_name = %s, 
+                    category = %s, original_image_url = %s, original_images_urls = %s,
+                    status = 'generating', updated_at = NOW()
+                WHERE tab_id = %s
+            """
+            cursor.execute(update_sql, (
+                tab_url, tab_title, product_id, product_name, category,
+                original_image_url, original_images_urls_json, tab_id
+            ))
+        else:
+            # 插入
+            insert_sql = """
+                INSERT INTO lovart_design_tab_mapping 
+                (tab_id, tab_url, tab_title, product_id, product_name, category, 
+                 original_image_url, original_images_urls, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'generating')
+            """
+            cursor.execute(insert_sql, (
+                tab_id, tab_url, tab_title, product_id, product_name, category,
+                original_image_url, original_images_urls_json
+            ))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'code': 0,
+            'message': 'Tab映射保存成功',
+            'data': {'tab_id': tab_id, 'product_id': product_id}
+        })
+    except Exception as e:
+        return jsonify({
+            'code': -1,
+            'message': f'保存失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/design/update-completed', methods=['POST'])
+def update_design_completed():
+    """更新设计图生成完成状态（N8N检测工作流调用）。支持新字段 design_images 或老字段 design_image_1/2/3。"""
+    try:
+        data = request.json
+        tab_id = data.get('tab_id')
+        design_images = data.get('design_images')  # 新字段：JSON 数组或已序列化字符串
+        design_image_1_url = data.get('design_image_1_url')
+        design_image_1_title = data.get('design_image_1_title')
+        design_image_2_url = data.get('design_image_2_url')
+        design_image_2_title = data.get('design_image_2_title')
+        design_image_3_url = data.get('design_image_3_url')
+        design_image_3_title = data.get('design_image_3_title')
+        
+        if not tab_id:
+            return jsonify({
+                'code': -1,
+                'message': 'tab_id不能为空'
+            }), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if design_images is not None:
+            # 新字段：写入 design_images
+            design_images_str = json.dumps(design_images) if not isinstance(design_images, str) else design_images
+            update_sql = """
+                UPDATE lovart_design_tab_mapping 
+                SET design_images = %s, updated_at = NOW()
+                WHERE tab_id = %s
+            """
+            cursor.execute(update_sql, (design_images_str, tab_id))
+        else:
+            # 老字段：写入 design_image_1/2/3
+            update_sql = """
+                UPDATE lovart_design_tab_mapping 
+                SET design_image_1_url = %s, design_image_1_title = %s,
+                    design_image_2_url = %s, design_image_2_title = %s,
+                    design_image_3_url = %s, design_image_3_title = %s,
+                    status = 'completed', completed_at = NOW(), updated_at = NOW()
+                WHERE tab_id = %s
+            """
+            cursor.execute(update_sql, (
+                design_image_1_url, design_image_1_title,
+                design_image_2_url, design_image_2_title,
+                design_image_3_url, design_image_3_title,
+                tab_id
+            ))
+        
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({
+                'code': -1,
+                'message': '未找到对应的Tab映射'
+            }), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'code': 0,
+            'message': '设计图信息更新成功',
+            'data': {'tab_id': tab_id}
+        })
+    except Exception as e:
+        return jsonify({
+            'code': -1,
+            'message': f'更新失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/design/pending-review', methods=['GET'])
+def get_pending_review():
+    """查询设计图列表（所有状态）"""
+    try:
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 20))
+        offset = (page - 1) * limit
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 查询总数（所有状态）
+        count_sql = """
+            SELECT COUNT(*) as total 
+            FROM lovart_design_tab_mapping
+        """
+        cursor.execute(count_sql)
+        total = cursor.fetchone()['total']
+        
+        # 查询待审核数量（用于统计）：含 generating、tab_closed、completed、ai_selected（前端有图才显示按钮）
+        pending_count_sql = """
+            SELECT COUNT(*) as pending_total 
+            FROM lovart_design_tab_mapping 
+            WHERE status IN ('completed', 'ai_selected', 'tab_closed', 'generating')
+        """
+        cursor.execute(pending_count_sql)
+        pending_total = cursor.fetchone()['pending_total']
+        
+        # 查询列表（所有状态），含新字段 design_images，兼容老字段 design_image_1/2/3
+        list_sql = """
+            SELECT id, tab_id, tab_url, product_id, product_name, category,
+                   original_image_url, original_images_urls,
+                   design_images,
+                   design_image_1_url, design_image_1_title,
+                   design_image_2_url, design_image_2_title,
+                   design_image_3_url, design_image_3_title,
+                   ai_recommendation, ai_reason,
+                   status, created_at, completed_at
+            FROM lovart_design_tab_mapping 
+            ORDER BY COALESCE(completed_at, created_at) DESC
+            LIMIT %s OFFSET %s
+        """
+        cursor.execute(list_sql, (limit, offset))
+        items = cursor.fetchall()
+        
+        # 处理原图URL数组、design_images（保持原样，前端优先用新字段再回退老字段）
+        for item in items:
+            if item.get('original_images_urls'):
+                try:
+                    item['original_images_urls'] = json.loads(item['original_images_urls'])
+                except:
+                    item['original_images_urls'] = []
+            else:
+                item['original_images_urls'] = []
+            # design_images 若为字符串则保持，前端会 JSON.parse；若为 None 则前端走老字段
+            if item.get('design_images') is not None and isinstance(item['design_images'], str):
+                try:
+                    item['design_images'] = json.loads(item['design_images']) if item['design_images'].strip() else []
+                except Exception:
+                    item['design_images'] = []
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {
+                'list': items,
+                'total': total,
+                'pending_total': pending_total,
+                'page': page,
+                'limit': limit
+            }
+        })
+    except Exception as e:
+        return jsonify({
+            'code': -1,
+            'message': f'查询失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/design/approve', methods=['POST'])
+def approve_design():
+    """用户选择设计图并触发下载转换工作流"""
+    try:
+        data = request.json
+        mapping_id = data.get('id')  # lovart_design_tab_mapping的id
+        selected_image_index = data.get('selected_image_index')  # 1, 2, 或 3
+        
+        if not mapping_id or not selected_image_index:
+            return jsonify({
+                'code': -1,
+                'message': 'id和selected_image_index不能为空'
+            }), 400
+        
+        if not isinstance(selected_image_index, int) or selected_image_index < 1:
+            return jsonify({
+                'code': -1,
+                'message': 'selected_image_index必须是大于0的整数'
+            }), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 查询映射信息（含新字段 design_images），generating/tab_closed/completed/ai_selected 均可选定
+        select_sql = """
+            SELECT tab_id, product_id, product_name, category,
+                   design_images,
+                   design_image_1_url, design_image_2_url, design_image_3_url
+            FROM lovart_design_tab_mapping 
+            WHERE id = %s AND status IN ('completed', 'ai_selected', 'tab_closed', 'generating')
+        """
+        cursor.execute(select_sql, (mapping_id,))
+        mapping = cursor.fetchone()
+        
+        if not mapping:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                'code': -1,
+                'message': '未找到对应的设计图记录或状态不正确'
+            }), 404
+        
+        # 获取选中的设计图URL：优先从 design_images 按索引取，否则回退老字段
+        selected_image_url = None
+        design_images = mapping.get('design_images')
+        if design_images:
+            if isinstance(design_images, str):
+                try:
+                    design_images = json.loads(design_images) if design_images.strip() else []
+                except Exception:
+                    design_images = []
+            if isinstance(design_images, list) and len(design_images) >= selected_image_index:
+                idx = selected_image_index - 1
+                chosen = design_images[idx] if isinstance(design_images[idx], dict) else {}
+                selected_image_url = chosen.get('url') or (design_images[idx] if isinstance(design_images[idx], str) else None)
+        if not selected_image_url and selected_image_index <= 3:
+            image_url_field = f'design_image_{selected_image_index}_url'
+            selected_image_url = mapping.get(image_url_field)
+        
+        if not selected_image_url:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                'code': -1,
+                'message': f'未找到第{selected_image_index}张设计图URL'
+            }), 404
+        
+        # 更新数据库状态
+        update_sql = """
+            UPDATE lovart_design_tab_mapping 
+            SET selected_image_index = %s, selected_image_url = %s,
+                status = 'approved', approved_at = NOW(), updated_at = NOW()
+            WHERE id = %s
+        """
+        cursor.execute(update_sql, (selected_image_index, selected_image_url, mapping_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        # TODO: 触发N8N下载转换工作流
+        # 这里需要调用N8N的webhook或API来触发工作流
+        # 暂时先返回成功，后续实现N8N触发逻辑
+        
+        return jsonify({
+            'code': 0,
+            'message': '设计图已采纳，下载转换工作流已触发',
+            'data': {
+                'id': mapping_id,
+                'selected_image_index': selected_image_index,
+                'selected_image_url': selected_image_url,
+                'product_id': mapping['product_id']
+            }
+        })
+    except Exception as e:
+        return jsonify({
+            'code': -1,
+            'message': f'操作失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/design/fail', methods=['POST'])
+def fail_design():
+    """放弃选择，标记为需人工调整（状态改为failed）"""
+    try:
+        data = request.json
+        mapping_id = data.get('id')
+        
+        if not mapping_id:
+            return jsonify({
+                'code': -1,
+                'message': 'id不能为空'
+            }), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        update_sql = """
+            UPDATE lovart_design_tab_mapping 
+            SET status = 'failed', updated_at = NOW()
+            WHERE id = %s AND status IN ('completed', 'ai_selected', 'tab_closed', 'generating')
+        """
+        cursor.execute(update_sql, (mapping_id,))
+        
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({
+                'code': -1,
+                'message': '未找到对应的记录或状态不正确'
+            }), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'code': 0,
+            'message': '已标记为需人工调整',
+            'data': {'id': mapping_id}
+        })
+    except Exception as e:
+        return jsonify({
+            'code': -1,
+            'message': f'操作失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/design/generating-list', methods=['GET'])
+def get_generating_list():
+    """查询生成中的Tab列表（N8N检测工作流调用）"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        sql = """
+            SELECT id, tab_id, tab_url, product_id, product_name, category
+            FROM lovart_design_tab_mapping 
+            WHERE status = 'generating'
+            ORDER BY created_at DESC
+        """
+        cursor.execute(sql)
+        items = cursor.fetchall()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': items
+        })
+    except Exception as e:
+        return jsonify({
+            'code': -1,
+            'message': f'查询失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/image/proxy', methods=['GET'])
+def proxy_image():
+    """图片代理接口，用于绕过防盗链限制（特别是移动端）"""
+    try:
+        image_url = request.args.get('url')
+        if not image_url:
+            return jsonify({
+                'code': -1,
+                'message': 'url参数不能为空'
+            }), 400
+        
+        # 只允许代理特定域名的图片（安全考虑）
+        allowed_domains = ['lovart.ai', 'a.lovart.ai', 'img.kwcdn.com']
+        parsed_url = urllib.parse.urlparse(image_url)
+        if not any(parsed_url.netloc.endswith(domain) for domain in allowed_domains):
+            return jsonify({
+                'code': -1,
+                'message': '不允许代理该域名的图片'
+            }), 403
+        
+        # 设置请求头，模拟浏览器请求
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.lovart.ai/',
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+        }
+        
+        # 请求图片
+        response = requests.get(image_url, headers=headers, timeout=10, stream=True)
+        response.raise_for_status()
+        
+        # 返回图片内容
+        from flask import Response
+        return Response(
+            response.content,
+            mimetype=response.headers.get('Content-Type', 'image/jpeg'),
+            headers={
+                'Cache-Control': 'public, max-age=86400',
+                'Access-Control-Allow-Origin': '*'
+            }
+        )
+    except requests.exceptions.RequestException as e:
+        return jsonify({
+            'code': -1,
+            'message': f'图片加载失败: {str(e)}'
+        }), 500
+    except Exception as e:
+        return jsonify({
+            'code': -1,
+            'message': f'代理失败: {str(e)}'
+        }), 500
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

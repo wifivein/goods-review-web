@@ -204,7 +204,8 @@ function initApp() {
                 }
             } catch (error) {
                 console.error('加载商品列表失败:', error);
-                ElMessage.error('加载商品列表失败: ' + (error.message || '网络错误'));
+                const msg = error.response?.data?.message || error.message || '网络错误';
+                ElMessage.error('加载商品列表失败: ' + msg);
             }
         },
         // 搜索

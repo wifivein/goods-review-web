@@ -462,7 +462,26 @@
         }
         .goods-header-left {
             flex: 1;
-            min-width: 300px;
+            min-width: 0;
+            overflow: hidden;
+        }
+        /* 审核通过按钮固定在最右侧，不随标题长度移动 */
+        .goods-header-actions {
+            flex-shrink: 0;
+            margin-left: 16px;
+        }
+        .goods-header-actions .el-button {
+            padding: 12px 24px !important;
+            font-size: 18px !important;
+            font-weight: bold !important;
+            height: auto !important;
+        }
+        /* 销量：不抢眼，与商品ID同一行或紧跟 */
+        .goods-sales-badge {
+            font-size: 13px;
+            color: #909399;
+            font-weight: normal;
+            margin-left: 12px;
         }
         /* 操作按钮行样式 */
         .action-buttons-row {
@@ -598,6 +617,10 @@
             .goods-header-left {
                 width: 100%;
                 font-size: 12px;
+            }
+            .goods-header-actions {
+                width: 100%;
+                margin-left: 0;
             }
             .goods-title-inline {
                 font-size: 13px !important;
@@ -892,18 +915,20 @@
                         <div class="goods-header-row">
                             <div class="goods-header-left">
                                 <strong>商品ID: {{ goodsList[0].goods_id }}</strong>
-                                <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266; display: flex; align-items: center; gap: 10px;">
+                                <span class="goods-sales-badge">销量: {{ goodsList[0].soldcount != null && goodsList[0].soldcount !== '' ? goodsList[0].soldcount : '-' }}</span>
+                                <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266;">
                                     <span>{{ goodsList[0].title }}</span>
-                                    <el-button 
-                                        v-if="goodsList[0].review_status === 0"
-                                        type="success" 
-                                        size="large" 
-                                        @click="handleApprove(goodsList[0])"
-                                        style="padding: 12px 24px; font-size: 18px; font-weight: bold; height: auto;"
-                                    >
-                                        审核通过
-                                    </el-button>
                                 </div>
+                            </div>
+                            <div class="goods-header-actions">
+                                <el-button 
+                                    v-if="goodsList[0].review_status === 0"
+                                    type="success" 
+                                    size="large" 
+                                    @click="handleApprove(goodsList[0])"
+                                >
+                                    审核通过
+                                </el-button>
                             </div>
                         </div>
                     </template>
@@ -987,18 +1012,20 @@
                                 >
                                     <strong>商品ID: {{ goods.goods_id }}</strong>
                                 </el-checkbox>
-                                <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266; display: flex; align-items: center; gap: 10px;">
+                                <span class="goods-sales-badge">销量: {{ goods.soldcount != null && goods.soldcount !== '' ? goods.soldcount : '-' }}</span>
+                                <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266;">
                                     <span>{{ goods.title }}</span>
-                                    <el-button 
-                                        v-if="goods.review_status === 0"
-                                        type="success" 
-                                        size="large" 
-                                        @click="handleApprove(goods)"
-                                        style="padding: 12px 24px; font-size: 18px; font-weight: bold; height: auto;"
-                                    >
-                                        审核通过
-                                    </el-button>
                                 </div>
+                            </div>
+                            <div class="goods-header-actions">
+                                <el-button 
+                                    v-if="goods.review_status === 0"
+                                    type="success" 
+                                    size="large" 
+                                    @click="handleApprove(goods)"
+                                >
+                                    审核通过
+                                </el-button>
                             </div>
                         </div>
                     </template>
@@ -1147,14 +1174,6 @@
                         :disabled="currentActionImageIndex === 0"
                     >
                         更换主图
-                    </el-button>
-                    <el-button 
-                        v-if="currentActionGoods.review_status === 0"
-                        type="success" 
-                        size="large"
-                        @click="handleActionFromDialog('approve')"
-                    >
-                        审核通过
                     </el-button>
                     <el-button 
                         type="success" 

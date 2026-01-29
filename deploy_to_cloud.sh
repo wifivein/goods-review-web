@@ -49,10 +49,12 @@ echo ""
 echo "[1/5] 打包项目..."
 TAR_FILE="goods_review_web_$(date +%Y%m%d_%H%M%S).tar.gz"
 cd ..
+# 排除本机敏感/本地配置，避免覆盖服务器上的 docker/.env（服务器用脚本默认或已有配置）
 tar --exclude='.git' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
-    --exclude='.env' \
+    --exclude='goods_review_web/backend/.env' \
+    --exclude='goods_review_web/docker/.env' \
     -czf "$TAR_FILE" goods_review_web/
 
 if [ $? -ne 0 ]; then
@@ -103,8 +105,11 @@ DB_NAME=temu_baodan
 # 外部API配置
 SAVE_API_URL=http://temebaodan.all369.cn/api/pc/savegoods
 AUTH_TOKEN=d6439e3f68072e610aedb646f0589717cb54061d4b336b94fbe73be79886a24d
+
+# 智谱 GLM-4V 图片理解（/api/vision/describe 必填）
+BIGMODEL_API_KEY=
 ENVEOF
-    echo "✓ 已创建环境变量文件"
+    echo "✓ 已创建环境变量文件（请编辑 .env 填写 BIGMODEL_API_KEY 后重启服务）"
 else
     echo "✓ 环境变量文件已存在"
 fi

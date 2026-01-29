@@ -203,7 +203,8 @@ def save_goods_to_external_api(goods_id):
             SAVE_API_URL,
             json=payload,
             headers=headers,
-            timeout=30
+            timeout=30,
+            proxies={}  # 不走环境代理，避免代理不可达导致整站不可用
         )
         
         if response.status_code == 200:
@@ -492,6 +493,85 @@ def get_goods_list():
             'code': -1,
             'message': f'查询失败: {str(e)}'
         }), 500
+
+
+# 图片描述接口可能较慢：拉图约 30s + 智谱 API 约 60s，建议客户端超时 >= 120s
+VISION_DESCRIBE_RECOMMENDED_TIMEOUT_MS = 120000
+
+
+def _vision_response(data, status=200):
+    """统一给 /api/vision/describe 的响应加上建议超时头，便于 n8n 等客户端设置足够长的 Timeout。"""
+    resp = jsonify(data)
+    resp.headers["X-Recommended-Timeout"] = str(VISION_DESCRIBE_RECOMMENDED_TIMEOUT_MS)
+    return resp, status
+
+
+def _parse_vision_image_inputs(data):
+    """从请求体解析出图片列表，每项为 URL 或 data:image/...;base64,...。
+    支持 image_base64 / image_base64_list（客户端拉图后传 base64，避免后端 Network unreachable）。
+    """
+    # 1) 客户端直接传 base64，后端不访问外网
+    base64_list = data.get('image_base64_list')
+    if isinstance(base64_list, list) and base64_list:
+        out = []
+        for item in base64_list:
+            if isinstance(item, str):
+                out.append(f"data:image/png;base64,{item.strip()}")
+            elif isinstance(item, dict) and item.get('base64'):
+                mime = (item.get('mime') or 'image/png').strip()
+                if not mime.startswith('image/'):
+                    mime = f"image/{mime}"
+                out.append(f"data:{mime};base64,{item['base64'].strip()}")
+        if out:
+            return out
+    single_b64 = data.get('image_base64')
+    if isinstance(single_b64, str) and single_b64.strip():
+        mime = (data.get('image_base64_mime') or 'image/png').strip()
+        if not mime.startswith('image/'):
+            mime = f"image/{mime}"
+        return [f"data:{mime};base64,{single_b64.strip()}"]
+    # 2) 传 URL，后端拉图（容器能访问外网时用）
+    urls = data.get('image_urls')
+    if isinstance(urls, list):
+        urls = [u for u in urls if u and str(u).strip().startswith(('http://', 'https://', 'data:image/'))]
+    else:
+        urls = []
+    if not urls:
+        single = (data.get('image_url') or '').strip()
+        if single and single.startswith(('http://', 'https://', 'data:image/')):
+            urls = [single]
+    return urls
+
+
+@app.route('/api/vision/describe', methods=['POST'])
+def vision_describe():
+    """调用大模型对图片进行描述/判断。
+    请求体（二选一）:
+      - URL：image_url 或 image_urls（后端会拉图，需容器能访问外网）
+      - Base64：image_base64 或 image_base64_list（客户端先拉图再传，适合后端 Network unreachable）
+      - prompt 可选。
+    拉图+智谱可能需 90s+，请将 HTTP 客户端 Timeout 设为至少 120 秒（响应头 X-Recommended-Timeout: 120000）。
+    """
+    try:
+        from vision_api import describe_image, get_api_key
+        if not get_api_key():
+            return _vision_response({'code': -1, 'message': '未配置 BIGMODEL_API_KEY'}, 503)
+        data = request.json or {}
+        urls = _parse_vision_image_inputs(data)
+        if not urls:
+            return _vision_response({
+                'code': -1,
+                'message': '缺少图片：请传 image_url / image_urls 或 image_base64 / image_base64_list（后端无法访问外网时用 base64）'
+            }, 400)
+        prompt = (data.get('prompt') or '').strip()
+        if not prompt:
+            prompt = '请分别描述这几张图片的内容' if len(urls) > 1 else '请描述这张图片的内容'
+        success, result = describe_image(urls, prompt=prompt)
+        if success:
+            return _vision_response({'code': 0, 'message': 'success', 'data': {'content': result}})
+        return _vision_response({'code': -1, 'message': str(result)}, 500)
+    except Exception as e:
+        return _vision_response({'code': -1, 'message': str(e)}, 500)
 
 
 @app.route('/api/goods/detail/<int:goods_id>', methods=['GET'])
@@ -803,7 +883,8 @@ def approve_goods():
                     INFRINGEMENT_API_URL,
                     json={'ids': [int(api_id)]},
                     headers={'Content-Type': 'application/json', 'Authorization': auth},
-                    timeout=10
+                    timeout=10,
+                    proxies={}  # 不走环境代理
                 )
                 infringement_ok = 200 <= r.status_code < 300
             except Exception as e:

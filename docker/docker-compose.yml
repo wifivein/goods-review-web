@@ -16,6 +16,7 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:-root}
       - DB_NAME=${DB_NAME:-temu_baodan}
       - SAVE_API_URL=${SAVE_API_URL:-http://temebaodan.all369.cn/api/pc/savegoods}
+      - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
       - COS_SECRET_ID=${COS_SECRET_ID:-}
       - COS_SECRET_KEY=${COS_SECRET_KEY:-}
       - COS_REGION=${COS_REGION:-ap-beijing}

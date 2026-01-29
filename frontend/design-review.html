@@ -730,8 +730,12 @@
                                     if (Array.isArray(arr) && arr.length > 0) return true;
                                     return !!(item.design_image_1_url || item.design_image_2_url || item.design_image_3_url);
                                 })();
-                                const defaultDesignIndex = item.selected_image_index || (hasDesignImages ? 1 : null);
                                 const excluded = Array.isArray(item.excluded_image_indices) ? item.excluded_image_indices : [];
+                                const list = this.getDesignImagesList(item);
+                                const visibleIndices = list.map(img => img.index).filter(idx => !excluded.includes(idx));
+                                const defaultDesignIndex = (item.selected_image_index && visibleIndices.includes(item.selected_image_index))
+                                    ? item.selected_image_index
+                                    : (hasDesignImages && visibleIndices.length ? visibleIndices[0] : null);
                                 return {
                                     ...item,
                                     currentOriginalIndex: 0,

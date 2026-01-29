@@ -1353,7 +1353,9 @@ def save_tab_mapping():
 
 @app.route('/api/design/update-completed', methods=['POST'])
 def update_design_completed():
-    """更新设计图生成完成状态（N8N检测工作流调用）。支持新字段 design_images 或老字段 design_image_1/2/3。"""
+    """将记录标记为最终状态「已处理完」（completed）。仅当下载+改名+横竖版等全部做完时由调用方（如 N8N）调用。
+    不再表示「生成完成」——生成中只要未在页面选定或关闭 Tab 都可能继续生成。
+    支持新字段 design_images 或老字段 design_image_1/2/3；仅老字段路径会写入 status=completed。"""
     try:
         data = request.json
         tab_id = data.get('tab_id')
@@ -1384,7 +1386,7 @@ def update_design_completed():
             """
             cursor.execute(update_sql, (design_images_str, tab_id))
         else:
-            # 老字段：写入 design_image_1/2/3
+            # 老字段：写入 design_image_1/2/3，并标记为最终状态「已处理完」（completed）
             update_sql = """
                 UPDATE lovart_design_tab_mapping 
                 SET design_image_1_url = %s, design_image_1_title = %s,
@@ -1442,11 +1444,11 @@ def get_pending_review():
         cursor.execute(count_sql)
         total = cursor.fetchone()['total']
         
-        # 查询待审核数量（用于统计）：含 generating、tab_closed、completed、ai_selected（前端有图才显示按钮）
+        # 查询待审核数量（用于统计）：completed 已改为最终状态「已处理完」，不再计入待审核
         pending_count_sql = """
             SELECT COUNT(*) as pending_total 
             FROM lovart_design_tab_mapping 
-            WHERE status IN ('completed', 'ai_selected', 'tab_closed', 'generating')
+            WHERE status IN ('ai_selected', 'tab_closed', 'generating')
         """
         cursor.execute(pending_count_sql)
         pending_total = cursor.fetchone()['pending_total']
@@ -1460,9 +1462,9 @@ def get_pending_review():
                    design_image_2_url, design_image_2_title,
                    design_image_3_url, design_image_3_title,
                    ai_recommendation, ai_reason,
-                   status, created_at, completed_at
+                   status, selected_image_index, created_at, completed_at
             FROM lovart_design_tab_mapping 
-            ORDER BY COALESCE(completed_at, created_at) DESC
+            ORDER BY (CASE WHEN status = 'generating' THEN 0 ELSE 1 END), COALESCE(completed_at, created_at) DESC
             LIMIT %s OFFSET %s
         """
         cursor.execute(list_sql, (limit, offset))
@@ -1528,13 +1530,13 @@ def approve_design():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 查询映射信息（含新字段 design_images），generating/tab_closed/completed/ai_selected 均可选定
+        # 查询映射信息（含新字段 design_images），generating/tab_closed/ai_selected 可选定（completed 已为最终状态不可再操作）
         select_sql = """
             SELECT tab_id, product_id, product_name, category,
                    design_images,
                    design_image_1_url, design_image_2_url, design_image_3_url
             FROM lovart_design_tab_mapping 
-            WHERE id = %s AND status IN ('completed', 'ai_selected', 'tab_closed', 'generating')
+            WHERE id = %s AND status IN ('ai_selected', 'tab_closed', 'generating')
         """
         cursor.execute(select_sql, (mapping_id,))
         mapping = cursor.fetchone()
@@ -1624,7 +1626,7 @@ def fail_design():
         update_sql = """
             UPDATE lovart_design_tab_mapping 
             SET status = 'failed', updated_at = NOW()
-            WHERE id = %s AND status IN ('completed', 'ai_selected', 'tab_closed', 'generating')
+            WHERE id = %s AND status IN ('ai_selected', 'tab_closed', 'generating')
         """
         cursor.execute(update_sql, (mapping_id,))
         
@@ -1649,6 +1651,105 @@ def fail_design():
             'code': -1,
             'message': f'操作失败: {str(e)}'
         }), 500
+
+
+@app.route('/api/design/switch-tab', methods=['POST'])
+def switch_design_tab():
+    """更换待审核记录的 Tab（新 Tab 的 tab_id 由前端经扩展解析 URL 后传入）"""
+    try:
+        data = request.json
+        mapping_id = data.get('id')
+        tab_id = data.get('tab_id')
+        tab_url = data.get('tab_url')
+        
+        if not mapping_id:
+            return jsonify({'code': -1, 'message': 'id不能为空'}), 400
+        if tab_id is None:
+            return jsonify({'code': -1, 'message': 'tab_id不能为空'}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        update_sql = """
+            UPDATE lovart_design_tab_mapping 
+            SET tab_id = %s, tab_url = COALESCE(%s, tab_url), status = 'generating', updated_at = NOW()
+            WHERE id = %s AND status IN ('ai_selected', 'tab_closed', 'generating', 'failed')
+        """
+        cursor.execute(update_sql, (tab_id, tab_url, mapping_id))
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({
+                'code': -1,
+                'message': '未找到对应的记录或状态不正确（待审核或已失败可更换 Tab）'
+            }), 404
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({
+            'code': 0,
+            'message': '已更换为该 Tab，状态已设为生成中',
+            'data': {'id': mapping_id, 'tab_id': tab_id}
+        })
+    except Exception as e:
+        return jsonify({'code': -1, 'message': f'操作失败: {str(e)}'}), 500
+
+
+@app.route('/api/design/add-original-image', methods=['POST'])
+def add_original_image():
+    """人工添加商品原图 URL，追加到 original_images_urls，用于补充参考图。支持一次传多个 URL（image_urls 数组）。"""
+    try:
+        data = request.json
+        mapping_id = data.get('id')
+        image_urls = data.get('image_urls')
+        image_url = data.get('image_url')
+        if not mapping_id:
+            return jsonify({'code': -1, 'message': 'id不能为空'}), 400
+        if image_urls is not None:
+            if not isinstance(image_urls, list):
+                return jsonify({'code': -1, 'message': 'image_urls 必须是数组'}), 400
+            to_add = [u.strip() for u in image_urls if u and isinstance(u, str) and u.strip()]
+        elif image_url and isinstance(image_url, str):
+            url_stripped = image_url.strip()
+            to_add = [url_stripped] if url_stripped else []
+        else:
+            to_add = []
+        if not to_add:
+            return jsonify({'code': -1, 'message': '请至少提供一个有效的 image_url 或 image_urls'}), 400
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT id, original_image_url, original_images_urls FROM lovart_design_tab_mapping WHERE id = %s',
+            (mapping_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'code': -1, 'message': '未找到对应记录'}), 404
+        urls = row['original_images_urls']
+        if urls:
+            try:
+                urls = json.loads(urls) if isinstance(urls, str) else urls
+            except Exception:
+                urls = []
+        if not isinstance(urls, list):
+            urls = []
+        urls.extend(to_add)
+        first_url = row['original_image_url'] or (to_add[0] if to_add else None)
+        cursor.execute(
+            """UPDATE lovart_design_tab_mapping 
+               SET original_image_url = COALESCE(original_image_url, %s), original_images_urls = %s, updated_at = NOW() 
+               WHERE id = %s""",
+            (first_url, json.dumps(urls, ensure_ascii=False), mapping_id)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({
+            'code': 0,
+            'message': f'已添加 {len(to_add)} 张原图',
+            'data': {'id': mapping_id, 'count': len(urls)}
+        })
+    except Exception as e:
+        return jsonify({'code': -1, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/api/design/generating-list', methods=['GET'])

@@ -157,9 +157,13 @@
             width: 80px;
             flex-shrink: 0;
             overflow-y: auto;
+            overflow-x: hidden;
             display: flex;
             flex-direction: column;
             gap: 6px;
+            max-height: calc(80px * 12 + 6px * 11);
+            /* 预留滚动条空间，避免 Windows Chrome 上出现/消失时布局变化导致闪烁 */
+            scrollbar-gutter: stable;
         }
         .thumbnail-item {
             border: 2px solid #e4e7ed;
@@ -193,7 +197,28 @@
             color: #606266;
             line-height: 1.2;
         }
+        .thumbnail-label .dims-text {
+            display: block;
+            font-size: 9px;
+            color: #909399;
+        }
+        .size-mismatch-badge {
+            margin-left: 10px;
+            padding: 2px 8px;
+            background: #fdf6ec;
+            color: #e6a23c;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .large-image-caption {
+            margin-top: 6px;
+            padding: 4px 0;
+            font-size: 12px;
+            color: #606266;
+            text-align: center;
+        }
         .large-image-display {
+            position: relative;
             flex: 1;
             min-width: 0;
             border: 2px solid #e4e7ed;
@@ -202,7 +227,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #fafafa;
+            background: #e8e8e8;
             height: 100%;
             max-height: calc(80px * 12 + 6px * 11);
         }
@@ -217,6 +242,85 @@
         .design-thumbnail-item.selected {
             border-color: #67c23a !important;
             border-width: 3px !important;
+        }
+        .design-thumbnail-item.approved {
+            border-color: #67c23a !important;
+            border-width: 3px !important;
+            box-shadow: 0 0 0 2px rgba(103, 194, 58, 0.3);
+        }
+        .thumbnail-with-exclude {
+            position: relative;
+        }
+        .thumbnail-exclude-btn {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            z-index: 5;
+            padding: 2px 4px;
+            font-size: 9px;
+            line-height: 1;
+            color: #909399;
+            background: rgba(255,255,255,0.9);
+            border: 1px solid #dcdfe6;
+            border-radius: 2px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .thumbnail-with-exclude:hover .thumbnail-exclude-btn {
+            opacity: 1;
+        }
+        .thumbnail-exclude-btn:hover {
+            color: #f56c6c;
+            border-color: #f56c6c;
+        }
+        .large-image-wrapper {
+            position: relative;
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        .large-image-toolbar {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            background: linear-gradient(180deg, rgba(0,0,0,0.5) 0%, transparent 100%);
+            color: #fff;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .large-image-toolbar.visible {
+            opacity: 1;
+        }
+        @media (max-width: 768px) {
+            .large-image-toolbar { opacity: 1; }
+        }
+        .large-image-toolbar .toolbar-label {
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .large-image-wrapper .large-image-display {
+            flex: 1;
+        }
+        .approved-badge {
+            position: absolute;
+            top: 4px;
+            left: 4px;
+            background: #67c23a;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            z-index: 10;
         }
         .ai-recommendation {
             position: absolute;
@@ -330,7 +434,9 @@
                         <div class="design-info">
                             <h3>{{ design.product_name || '未命名商品' }}</h3>
                             <div class="design-meta">
-                                <span>商品ID: {{ design.product_id }}</span>
+                                <span>商品ID: {{ design.product_id }}
+                                    <el-button type="primary" link size="small" @click="copyProductId(design.product_id)" title="复制商品ID">复制</el-button>
+                                </span>
                                 <span>分类: {{ design.category || '未分类' }}</span>
                                 <span>完成时间: {{ formatTime(design.completed_at) }}</span>
                             </div>
@@ -347,6 +453,7 @@
                             <div class="gallery-title">
                                 <span>📷</span>
                                 <span>商品原图</span>
+                                <el-button type="primary" link size="small" @click="openAddOriginalDialog(design)">添加原图</el-button>
                             </div>
                             <div class="gallery-main">
                                 <div class="thumbnail-list">
@@ -381,32 +488,49 @@
                                 <span v-if="design.ai_recommendation" style="font-size: 12px; color: #409eff; margin-left: 10px;">
                                     (AI推荐: 图{{ design.ai_recommendation }})
                                 </span>
+                                <span v-if="hasDesignSizeMismatch(design)" class="size-mismatch-badge" title="三张图尺寸差异较大，请留意">⚠ 尺寸差异大</span>
                             </div>
                             <div class="gallery-main">
                                 <div class="thumbnail-list">
                                     <div 
-                                        v-for="img in getDesignImagesList(design)" 
+                                        v-for="img in getVisibleDesignThumbnails(design)" 
                                         :key="img.index"
-                                        class="thumbnail-item design-thumbnail-item"
-                                        :class="{ active: design.currentDesignIndex === img.index, selected: design.selectedIndex === img.index }"
+                                        class="thumbnail-item design-thumbnail-item thumbnail-with-exclude"
+                                        :class="{ active: design.currentDesignIndex === img.index, selected: design.selectedIndex === img.index, approved: design.selected_image_index === img.index }"
                                         @click="selectDesignThumbnail(design, img.index)"
                                     >
-                                        <div v-if="design.ai_recommendation === img.index" class="ai-recommendation">AI</div>
+                                        <button type="button" class="thumbnail-exclude-btn" title="排除此项，便于对比其余" @click.stop="toggleExclude(design, img.index, $event)">排除</button>
+                                        <div v-if="design.selected_image_index === img.index" class="approved-badge">已采纳</div>
+                                        <div v-else-if="design.ai_recommendation === img.index" class="ai-recommendation">AI</div>
                                         <img 
                                             v-if="img.url"
                                             :src="getImageUrl(img.url)" 
                                             :alt="img.title"
                                             referrerpolicy="no-referrer"
                                             @error="handleImageError"
+                                            @load="onDesignImageLoad(design, img.index, $event)"
                                         >
                                         <div v-else style="padding: 20px; text-align: center; color: #909399; font-size: 12px;">
                                             暂无
                                         </div>
                                         <div class="thumbnail-label">
-                                            {{ img.title }}
+                                            图{{ img.index }}
+                                            <span v-if="getDesignImageDims(design, img.index)" class="dims-text">{{ getDesignImageDims(design, img.index).w }}×{{ getDesignImageDims(design, img.index).h }}</span>
                                         </div>
                                     </div>
                                 </div>
+                                <div class="large-image-wrapper" @mouseenter="design._hoverLarge = true" @mouseleave="design._hoverLarge = false">
+                                    <div v-if="design.currentDesignIndex && isPendingStatus(design)" class="large-image-toolbar" :class="{ visible: design._hoverLarge }">
+                                        <span class="toolbar-label">图{{ design.currentDesignIndex }}</span>
+                                        <el-button type="success" size="small" :disabled="design.selectedIndex !== design.currentDesignIndex" :loading="design.approving" @click="approveDesign(design)">
+                                            <el-icon><Check /></el-icon>
+                                            选定这张
+                                        </el-button>
+                                        <el-button type="warning" size="small" :loading="design.failing" @click="failDesign(design)">
+                                            <el-icon><Close /></el-icon>
+                                            放弃
+                                        </el-button>
+                                    </div>
                                 <div class="large-image-display">
                                     <img 
                                         v-if="design.currentDesignIndex && getDesignImageUrl(design, design.currentDesignIndex)"
@@ -419,6 +543,10 @@
                                         点击左侧缩略图查看大图
                                     </div>
                                 </div>
+                                <div v-if="design.currentDesignIndex && getDesignImageTitle(design, design.currentDesignIndex)" class="large-image-caption">
+                                    {{ getDesignImageTitle(design, design.currentDesignIndex) }}
+                                </div>
+                                </div>
                             </div>
                             <div v-if="design.ai_reason && design.currentDesignIndex === design.ai_recommendation" 
                                  style="margin-top: 15px; padding: 10px; background: #ecf5ff; border-radius: 4px; font-size: 13px; color: #606266;">
@@ -427,27 +555,78 @@
                         </div>
                     </div>
                     
-                    <!-- 操作按钮：有设计图可选且状态为可审核时显示（含 generating/tab_closed/completed/ai_selected） -->
-                    <div v-if="isPendingStatus(design)" class="action-buttons">
+                    <!-- 操作按钮：待审核显示 更换 Tab + 选定/放弃；生成失败仅显示 更换 Tab -->
+                    <div v-if="isPendingStatus(design) || design.status === 'failed'" class="action-buttons">
                         <el-button 
-                            type="success" 
-                            :disabled="!design.selectedIndex"
-                            :loading="design.approving"
-                            @click="approveDesign(design)"
+                            type="primary" 
+                            plain
+                            @click="openSwitchTabDialog(design)"
                         >
-                            <el-icon><Check /></el-icon>
-                            选定这张
+                            更换 Tab
                         </el-button>
-                        <el-button 
-                            type="warning"
-                            :loading="design.failing"
-                            @click="failDesign(design)"
-                        >
-                            <el-icon><Close /></el-icon>
-                            放弃选择，人工调整
-                        </el-button>
+                        <template v-if="isPendingStatus(design)">
+                            <el-button 
+                                type="success" 
+                                :disabled="!design.selectedIndex"
+                                :loading="design.approving"
+                                @click="approveDesign(design)"
+                            >
+                                <el-icon><Check /></el-icon>
+                                选定这张
+                            </el-button>
+                            <el-button 
+                                type="warning"
+                                :loading="design.failing"
+                                @click="failDesign(design)"
+                            >
+                                <el-icon><Close /></el-icon>
+                                放弃选择，人工调整
+                            </el-button>
+                        </template>
                     </div>
                 </div>
+            </div>
+
+            <!-- 更换 Tab 弹窗 -->
+            <el-dialog
+                v-model="switchTabDialogVisible"
+                title="更换 Tab"
+                width="480px"
+                :close-on-click-modal="false"
+                @close="closeSwitchTabDialog"
+            >
+                <p style="color: #606266; margin-bottom: 12px;">请先在<strong>运行扩展的那台 Chrome</strong>中打开新的 Lovart Tab（新 Agent），复制地址栏完整 URL 粘贴到下面。扩展服务地址填<strong>当前浏览器能访问到的</strong>扩展 HTTP 服务（本机跑扩展填 localhost:8889；审核页在别的机器则填 Win1 的局域网 IP:端口）。</p>
+                <el-form label-width="120px">
+                    <el-form-item label="扩展服务地址">
+                        <el-input v-model="switchTabExtensionBaseUrl" placeholder="本机: http://localhost:8889；远程 Win1: http://Win1的局域网IP:端口（与 N8N 的 chromeExtensionBaseUrl 不同，填当前浏览器能访问到的地址）" />
+                    </el-form-item>
+                    <el-form-item label="新 Tab 的 URL">
+                        <el-input v-model="switchTabNewUrl" type="textarea" :rows="2" placeholder="粘贴新 Tab 的完整 URL" />
+                    </el-form-item>
+                </el-form>
+                <template #footer>
+                    <el-button @click="closeSwitchTabDialog">取消</el-button>
+                    <el-button type="primary" :loading="switchTabLoading" @click="confirmSwitchTab">确定更换</el-button>
+                </template>
+            </el-dialog>
+
+            <!-- 添加原图弹窗 -->
+            <el-dialog
+                v-model="addOriginalDialogVisible"
+                title="添加商品原图"
+                width="480px"
+                :close-on-click-modal="false"
+                @close="closeAddOriginalDialog"
+            >
+                <p style="color: #606266; margin-bottom: 12px;">每行填写一个图片的完整 URL，将按行追加到左侧原图画廊。空行会被忽略。</p>
+                <el-form-item label="图片 URL（每行一个）">
+                    <el-input v-model="addOriginalUrl" type="textarea" :rows="5" placeholder="https://图1地址&#10;https://图2地址&#10;https://图3地址" />
+                </el-form-item>
+                <template #footer>
+                    <el-button @click="closeAddOriginalDialog">取消</el-button>
+                    <el-button type="primary" :loading="addOriginalLoading" @click="confirmAddOriginalImage">添加</el-button>
+                </template>
+            </el-dialog>
             </div>
             <!-- 分页 -->
             <div v-if="designList.length > 0" class="pagination-wrapper">
@@ -486,7 +665,18 @@
                         page: 1,
                         limit: 20,
                         total: 0
-                    }
+                    },
+                    switchTabDialogVisible: false,
+                    switchTabDesign: null,
+                    switchTabNewUrl: '',
+                    switchTabExtensionBaseUrl: (() => {
+                        try { return localStorage.getItem('designReview_extensionBaseUrl') || ''; } catch (e) { return ''; }
+                    })(),
+                    switchTabLoading: false,
+                    addOriginalDialogVisible: false,
+                    addOriginalDesign: null,
+                    addOriginalUrl: '',
+                    addOriginalLoading: false
                 };
             },
             mounted() {
@@ -518,14 +708,26 @@
                         });
                         if (response.data.code === 0) {
                             const data = response.data.data;
-                            this.designList = (data.list || []).map(item => ({
-                                ...item,
-                                currentOriginalIndex: 0,
-                                currentDesignIndex: null,
-                                selectedIndex: null,
-                                approving: false,
-                                failing: false
-                            }));
+                            this.designList = (data.list || []).map(item => {
+                                const hasDesignImages = (() => {
+                                    let arr = item.design_images;
+                                    if (typeof arr === 'string') try { arr = arr ? JSON.parse(arr) : []; } catch (e) { arr = []; }
+                                    if (Array.isArray(arr) && arr.length > 0) return true;
+                                    return !!(item.design_image_1_url || item.design_image_2_url || item.design_image_3_url);
+                                })();
+                                const defaultDesignIndex = item.selected_image_index || (hasDesignImages ? 1 : null);
+                                return {
+                                    ...item,
+                                    currentOriginalIndex: 0,
+                                    currentDesignIndex: defaultDesignIndex,
+                                    selectedIndex: defaultDesignIndex,
+                                    approving: false,
+                                    failing: false,
+                                    _imageDims: {},
+                                    _excludedIndices: [],
+                                    _hoverLarge: false
+                                };
+                            });
                             this.pagination.total = data.total || 0;
                             this.totalCount = data.total || 0;
                             this.pendingCount = data.pending_total || 0;
@@ -553,6 +755,26 @@
                     design.currentDesignIndex = design.currentDesignIndex === index ? null : index;
                     // 同时选中（用于提交）
                     design.selectedIndex = index;
+                },
+                // 可见设计图缩略图（排除掉“已排除”的，序号保留）
+                getVisibleDesignThumbnails(design) {
+                    const list = this.getDesignImagesList(design);
+                    const excluded = design._excludedIndices || [];
+                    return list.filter(img => !excluded.includes(img.index));
+                },
+                toggleExclude(design, index, e) {
+                    if (e) e.stopPropagation();
+                    if (!design._excludedIndices) design._excludedIndices = [];
+                    const arr = design._excludedIndices;
+                    if (arr.includes(index)) {
+                        design._excludedIndices = arr.filter(i => i !== index);
+                    } else {
+                        design._excludedIndices = [...arr, index];
+                    }
+                    const visible = this.getVisibleDesignThumbnails(design);
+                    if (design.currentDesignIndex === index) {
+                        design.currentDesignIndex = visible.length ? visible[0].index : null;
+                    }
                 },
                 async approveDesign(design) {
                     if (!design.selectedIndex) {
@@ -590,6 +812,100 @@
                         }
                     } finally {
                         design.approving = false;
+                    }
+                },
+                openSwitchTabDialog(design) {
+                    this.switchTabDesign = design;
+                    this.switchTabNewUrl = '';
+                    this.switchTabDialogVisible = true;
+                },
+                closeSwitchTabDialog() {
+                    this.switchTabDialogVisible = false;
+                    this.switchTabDesign = null;
+                    this.switchTabNewUrl = '';
+                },
+                openAddOriginalDialog(design) {
+                    this.addOriginalDesign = design;
+                    this.addOriginalUrl = '';
+                    this.addOriginalDialogVisible = true;
+                },
+                closeAddOriginalDialog() {
+                    this.addOriginalDialogVisible = false;
+                    this.addOriginalDesign = null;
+                    this.addOriginalUrl = '';
+                },
+                async confirmAddOriginalImage() {
+                    const lines = (this.addOriginalUrl || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+                    if (lines.length === 0) {
+                        ElMessage.warning('请填写至少一个图片 URL（每行一个）');
+                        return;
+                    }
+                    this.addOriginalLoading = true;
+                    try {
+                        const res = await axios.post(API_BASE_URL + '/design/add-original-image', {
+                            id: this.addOriginalDesign.id,
+                            image_urls: lines
+                        });
+                        if (res.data && res.data.code === 0) {
+                            ElMessage.success(res.data.message || '已添加原图');
+                            this.closeAddOriginalDialog();
+                            this.loadDesignList();
+                        } else {
+                            ElMessage.error(res.data?.message || '添加失败');
+                        }
+                    } catch (err) {
+                        ElMessage.error(err.response?.data?.message || err.message || '添加失败');
+                    } finally {
+                        this.addOriginalLoading = false;
+                    }
+                },
+                async confirmSwitchTab() {
+                    const base = (this.switchTabExtensionBaseUrl || '').trim().replace(/\/+$/, '');
+                    const url = (this.switchTabNewUrl || '').trim();
+                    if (!base) {
+                        ElMessage.warning('请填写扩展服务地址（与 N8N 中 chromeExtensionBaseUrl 一致）');
+                        return;
+                    }
+                    if (!url) {
+                        ElMessage.warning('请粘贴新 Tab 的 URL');
+                        return;
+                    }
+                    try {
+                        localStorage.setItem('designReview_extensionBaseUrl', base);
+                    } catch (e) {}
+                    this.switchTabLoading = true;
+                    try {
+                        const extRes = await fetch(base + '/api/get-tab-id-by-url', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ url })
+                        });
+                        const extData = await extRes.json();
+                        if (!extRes.ok || (extData && extData.success === false)) {
+                            throw new Error(extData && extData.error ? extData.error : '扩展解析 tabId 失败');
+                        }
+                        const tabId = extData.tabId ?? extData.data?.tabId;
+                        const tabUrl = extData.url ?? extData.data?.url ?? url;
+                        if (tabId == null) {
+                            throw new Error('扩展未返回 tabId');
+                        }
+                        const res = await axios.post(API_BASE_URL + '/design/switch-tab', {
+                            id: this.switchTabDesign.id,
+                            tab_id: tabId,
+                            tab_url: tabUrl
+                        });
+                        if (res.data && res.data.code === 0) {
+                            ElMessage.success(res.data.message || '已更换为该 Tab');
+                            this.closeSwitchTabDialog();
+                            this.loadDesignList();
+                        } else {
+                            ElMessage.error(res.data?.message || '更换失败');
+                        }
+                    } catch (err) {
+                        const msg = err.response?.data?.message || err.message || '更换失败';
+                        ElMessage.error(msg);
+                    } finally {
+                        this.switchTabLoading = false;
                     }
                 },
                 async failDesign(design) {
@@ -632,11 +948,35 @@
                 handleImageError(event) {
                     event.target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iI2U0ZTdlZCIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjE0IiBmaWxsPSIjOTA5Mzk5IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSI+5Zu+54mH5pyq5Yqg6L29PC90ZXh0Pjwvc3ZnPg==';
                 },
+                copyProductId(productId) {
+                    if (!productId) return;
+                    const text = String(productId);
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制商品ID')).catch(() => fallbackCopy(text));
+                    } else {
+                        fallbackCopy(text);
+                    }
+                    function fallbackCopy(str) {
+                        const ta = document.createElement('textarea');
+                        ta.value = str;
+                        ta.style.position = 'fixed';
+                        ta.style.opacity = '0';
+                        document.body.appendChild(ta);
+                        ta.select();
+                        try {
+                            document.execCommand('copy');
+                            ElMessage.success('已复制商品ID');
+                        } catch (e) {
+                            ElMessage.error('复制失败');
+                        }
+                        document.body.removeChild(ta);
+                    }
+                },
                 // 获取状态文本
                 getStatusText(status) {
                     const statusMap = {
                         'generating': '生成中',
-                        'completed': '生成完成',
+                        'completed': '已处理完',
                         'ai_selected': 'AI已推荐',
                         'approved': '已采纳',
                         'skipped': '已跳过',
@@ -646,12 +986,12 @@
                     };
                     return statusMap[status] || status;
                 },
-                // 判断是否显示操作按钮：有设计图可选 且 状态为可审核（generating 有图、tab_closed、completed、ai_selected）
+                // 判断是否显示操作按钮：有设计图可选 且 状态为可审核（completed 已改为最终状态「已处理完」不显示按钮）
                 isPendingStatus(design) {
                     const list = this.getDesignImagesList(design);
                     if (!list || list.length === 0) return false;
                     const s = design && design.status;
-                    return s === 'completed' || s === 'ai_selected' || s === 'tab_closed' || s === 'generating';
+                    return s === 'ai_selected' || s === 'tab_closed' || s === 'generating';
                 },
                 // 设计图列表：优先用新字段 design_images，为空则用老字段 design_image_1/2/3
                 getDesignImagesList(design) {
@@ -682,6 +1022,26 @@
                     const list = this.getDesignImagesList(design);
                     const item = list.find(img => img.index === index);
                     return item ? item.title : (design[`design_image_${index}_title`] || `设计图${index}`);
+                },
+                // 设计图加载完成后记录尺寸（用于显示与检测尺寸差异）
+                onDesignImageLoad(design, index, event) {
+                    const img = event.target;
+                    if (!img.naturalWidth || !img.naturalHeight) return;
+                    if (!design._imageDims) design._imageDims = {};
+                    design._imageDims[index] = { w: img.naturalWidth, h: img.naturalHeight };
+                },
+                getDesignImageDims(design, index) {
+                    return design._imageDims && design._imageDims[index] || null;
+                },
+                // 三张设计图尺寸差异是否过大（最大面积/最小面积 > 2 视为差异大）
+                hasDesignSizeMismatch(design) {
+                    const dims = design._imageDims;
+                    if (!dims) return false;
+                    const areas = [1, 2, 3].map(i => dims[i]).filter(Boolean).map(d => d.w * d.h);
+                    if (areas.length < 2) return false;
+                    const minA = Math.min(...areas);
+                    const maxA = Math.max(...areas);
+                    return minA > 0 && maxA / minA > 2;
                 }
             }
         }).use(ElementPlus).mount('#app');

@@ -274,6 +274,12 @@
             color: #f56c6c;
             border-color: #f56c6c;
         }
+        .thumbnail-item.is-excluded {
+            opacity: 0.65;
+        }
+        .thumbnail-item.is-excluded:hover {
+            opacity: 1;
+        }
         .large-image-wrapper {
             position: relative;
             flex: 1;
@@ -309,6 +315,12 @@
         }
         .large-image-wrapper .large-image-display {
             flex: 1;
+            min-height: 200px;
+            background-color: #e8e8e8;
+            background-image:
+                linear-gradient(rgba(0,0,0,0.06) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0,0,0,0.06) 1px, transparent 1px);
+            background-size: 20px 20px;
         }
         .approved-badge {
             position: absolute;
@@ -489,6 +501,9 @@
                                     (AI推荐: 图{{ design.ai_recommendation }})
                                 </span>
                                 <span v-if="hasDesignSizeMismatch(design)" class="size-mismatch-badge" title="三张图尺寸差异较大，请留意">⚠ 尺寸差异大</span>
+                                <el-button v-if="(design._excludedIndices || []).length > 0" type="primary" link size="small" @click="design._showExcluded = !design._showExcluded">
+                                    {{ design._showExcluded ? '隐藏所有已排除项' : '显示所有已排除项' }}
+                                </el-button>
                             </div>
                             <div class="gallery-main">
                                 <div class="thumbnail-list">
@@ -496,10 +511,10 @@
                                         v-for="img in getVisibleDesignThumbnails(design)" 
                                         :key="img.index"
                                         class="thumbnail-item design-thumbnail-item thumbnail-with-exclude"
-                                        :class="{ active: design.currentDesignIndex === img.index, selected: design.selectedIndex === img.index, approved: design.selected_image_index === img.index }"
+                                        :class="{ active: design.currentDesignIndex === img.index, selected: design.selectedIndex === img.index, approved: design.selected_image_index === img.index, 'is-excluded': (design._excludedIndices || []).includes(img.index) }"
                                         @click="selectDesignThumbnail(design, img.index)"
                                     >
-                                        <button type="button" class="thumbnail-exclude-btn" title="排除此项，便于对比其余" @click.stop="toggleExclude(design, img.index, $event)">排除</button>
+                                        <button type="button" class="thumbnail-exclude-btn" :title="(design._excludedIndices || []).includes(img.index) ? '取消排除' : '排除此项，便于对比其余'" @click.stop="toggleExclude(design, img.index, $event)">{{ (design._excludedIndices || []).includes(img.index) ? '取消排除' : '排除' }}</button>
                                         <div v-if="design.selected_image_index === img.index" class="approved-badge">已采纳</div>
                                         <div v-else-if="design.ai_recommendation === img.index" class="ai-recommendation">AI</div>
                                         <img 
@@ -716,6 +731,7 @@
                                     return !!(item.design_image_1_url || item.design_image_2_url || item.design_image_3_url);
                                 })();
                                 const defaultDesignIndex = item.selected_image_index || (hasDesignImages ? 1 : null);
+                                const excluded = Array.isArray(item.excluded_image_indices) ? item.excluded_image_indices : [];
                                 return {
                                     ...item,
                                     currentOriginalIndex: 0,
@@ -724,7 +740,8 @@
                                     approving: false,
                                     failing: false,
                                     _imageDims: {},
-                                    _excludedIndices: [],
+                                    _excludedIndices: excluded,
+                                    _showExcluded: false,
                                     _hoverLarge: false
                                 };
                             });
@@ -756,24 +773,31 @@
                     // 同时选中（用于提交）
                     design.selectedIndex = index;
                 },
-                // 可见设计图缩略图（排除掉“已排除”的，序号保留）
+                // 可见设计图缩略图：未开“显示已排除”时过滤掉已排除项；开启时显示全部
                 getVisibleDesignThumbnails(design) {
                     const list = this.getDesignImagesList(design);
+                    if (design._showExcluded) return list;
                     const excluded = design._excludedIndices || [];
                     return list.filter(img => !excluded.includes(img.index));
                 },
-                toggleExclude(design, index, e) {
+                async toggleExclude(design, index, e) {
                     if (e) e.stopPropagation();
                     if (!design._excludedIndices) design._excludedIndices = [];
                     const arr = design._excludedIndices;
-                    if (arr.includes(index)) {
-                        design._excludedIndices = arr.filter(i => i !== index);
-                    } else {
-                        design._excludedIndices = [...arr, index];
-                    }
+                    const next = arr.includes(index) ? arr.filter(i => i !== index) : [...arr, index];
+                    design._excludedIndices = next;
                     const visible = this.getVisibleDesignThumbnails(design);
                     if (design.currentDesignIndex === index) {
                         design.currentDesignIndex = visible.length ? visible[0].index : null;
+                    }
+                    try {
+                        await axios.post(`${API_BASE_URL}/design/set-excluded`, {
+                            id: design.id,
+                            excluded_image_indices: next
+                        });
+                    } catch (err) {
+                        console.error('保存排除状态失败:', err);
+                        ElMessage.warning('排除状态保存失败，刷新后可能丢失');
                     }
                 },
                 async approveDesign(design) {

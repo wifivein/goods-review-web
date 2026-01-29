@@ -1534,11 +1534,11 @@ def get_pending_review():
         cursor.execute(pending_count_sql)
         pending_total = cursor.fetchone()['pending_total']
         
-        # 查询列表（所有状态），含新字段 design_images，兼容老字段 design_image_1/2/3
+        # 查询列表（所有状态），含新字段 design_images、excluded_image_indices，兼容老字段 design_image_1/2/3
         list_sql = """
             SELECT id, tab_id, tab_url, product_id, product_name, category,
                    original_image_url, original_images_urls,
-                   design_images,
+                   design_images, excluded_image_indices,
                    design_image_1_url, design_image_1_title,
                    design_image_2_url, design_image_2_title,
                    design_image_3_url, design_image_3_title,
@@ -1551,7 +1551,7 @@ def get_pending_review():
         cursor.execute(list_sql, (limit, offset))
         items = cursor.fetchall()
         
-        # 处理原图URL数组、design_images（保持原样，前端优先用新字段再回退老字段）
+        # 处理原图URL数组、design_images、excluded_image_indices（保持原样，前端优先用新字段再回退老字段）
         for item in items:
             if item.get('original_images_urls'):
                 try:
@@ -1566,6 +1566,14 @@ def get_pending_review():
                     item['design_images'] = json.loads(item['design_images']) if item['design_images'].strip() else []
                 except Exception:
                     item['design_images'] = []
+            # 排除的设计图索引（JSON 数组，如 [0,2]）
+            if item.get('excluded_image_indices') is not None and isinstance(item['excluded_image_indices'], str):
+                try:
+                    item['excluded_image_indices'] = json.loads(item['excluded_image_indices']) if item['excluded_image_indices'].strip() else []
+                except Exception:
+                    item['excluded_image_indices'] = []
+            else:
+                item['excluded_image_indices'] = item.get('excluded_image_indices') or []
         
         cursor.close()
         conn.close()
@@ -1586,6 +1594,36 @@ def get_pending_review():
             'code': -1,
             'message': f'查询失败: {str(e)}'
         }), 500
+
+
+@app.route('/api/design/set-excluded', methods=['POST'])
+def set_design_excluded():
+    """持久化「排除」的设计图索引（设计图审核页用）"""
+    try:
+        data = request.json
+        mapping_id = data.get('id')
+        excluded_image_indices = data.get('excluded_image_indices')
+        if mapping_id is None:
+            return jsonify({'code': -1, 'message': 'id 不能为空'}), 400
+        if not isinstance(excluded_image_indices, list):
+            excluded_image_indices = []
+        excluded_image_indices = [int(x) for x in excluded_image_indices if isinstance(x, (int, float)) and int(x) >= 0]
+        excluded_json = json.dumps(excluded_image_indices)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE lovart_design_tab_mapping SET excluded_image_indices = %s, updated_at = NOW() WHERE id = %s",
+            (excluded_json, mapping_id)
+        )
+        rowcount = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+        if rowcount == 0:
+            return jsonify({'code': -1, 'message': '未找到对应记录'}), 404
+        return jsonify({'code': 0, 'message': 'success', 'data': {'excluded_image_indices': excluded_image_indices}})
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
 
 
 @app.route('/api/design/approve', methods=['POST'])

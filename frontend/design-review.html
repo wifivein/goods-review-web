@@ -363,28 +363,6 @@
             font-weight: 600;
             z-index: 10;
         }
-        .discard-badge {
-            position: absolute;
-            top: 4px;
-            left: 4px;
-            background: #909399;
-            color: white;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 10px;
-            font-weight: 600;
-            z-index: 10;
-        }
-        .discard-reason-text {
-            display: block;
-            font-size: 10px;
-            color: #909399;
-            margin-top: 2px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 100%;
-        }
         .thumbnail-original-item {
             position: relative;
         }
@@ -451,6 +429,21 @@
         .refresh-btn {
             margin-bottom: 20px;
         }
+        .prompt-config-panel {
+            margin-bottom: 20px;
+            padding: 16px;
+            background: #f5f7fa;
+            border-radius: 8px;
+            border: 1px solid #e4e7ed;
+        }
+        .prompt-config-header {
+            font-size: 13px;
+            color: #606266;
+            margin-bottom: 10px;
+        }
+        .prompt-config-actions {
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -472,7 +465,19 @@
                     <el-icon><Refresh /></el-icon>
                     刷新列表
                 </el-button>
+                <el-button type="info" plain @click="openPromptConfig">AI 推荐提示词配置</el-button>
             </div>
+            <!-- AI 推荐提示词配置（可折叠） -->
+            <el-collapse-transition>
+                <div v-show="promptConfigVisible" class="prompt-config-panel">
+                    <div class="prompt-config-header">AI 推荐提示词（大模型综合评分用，支持占位符 {{original_count}}、{{design_count}}）</div>
+                    <el-input v-model="aiRecommendPrompt" type="textarea" :rows="8" placeholder="提示词内容..." />
+                    <div class="prompt-config-actions">
+                        <el-button type="primary" @click="savePromptConfig" :loading="promptConfigSaving">保存</el-button>
+                        <el-button @click="promptConfigVisible = false">收起</el-button>
+                    </div>
+                </div>
+            </el-collapse-transition>
             <div v-if="loading" class="loading">
                 <el-icon class="is-loading"><Loading /></el-icon>
                 <p>加载中...</p>
@@ -557,6 +562,8 @@
                                 <el-button v-if="(design._excludedIndices || []).length > 0" type="primary" link size="small" @click="design._showExcluded = !design._showExcluded">
                                     {{ design._showExcluded ? '隐藏所有已排除项' : '显示所有已排除项' }}
                                 </el-button>
+                                <el-button type="primary" link size="small" @click="openAddDesignImageDialog(design)">添加已有设计图</el-button>
+                                <el-button type="warning" link size="small" @click="resetDesignCheck(design)">重置预检结果</el-button>
                             </div>
                             <div class="gallery-main">
                                 <div class="thumbnail-list">
@@ -576,7 +583,6 @@
                                             <button type="button" class="thumbnail-exclude-btn" :title="(design._excludedIndices || []).includes(img.index) ? '取消排除' : '排除此项，便于对比其余'" @click.stop="toggleExclude(design, img.index, $event)">{{ (design._excludedIndices || []).includes(img.index) ? '取消排除' : '排除' }}</button>
                                             <div v-if="design.selected_image_index === img.index" class="approved-badge">已采纳</div>
                                             <div v-else-if="design.ai_recommendation === img.index" class="ai-recommendation">AI</div>
-                                            <div v-else-if="getDiscardReason(design, img.index)" class="discard-badge">已废弃</div>
                                             <img 
                                                 v-if="img.url"
                                                 :src="getImageUrl(img.url)" 
@@ -631,10 +637,14 @@
                                  style="margin-top: 15px; padding: 10px; background: #ecf5ff; border-radius: 4px; font-size: 13px; color: #606266;">
                                 <strong>AI推荐理由:</strong> {{ design.ai_reason }}
                             </div>
+                            <div v-if="design.ai_prompt_suggestion" 
+                                 style="margin-top: 15px; padding: 10px; background: #fef0f0; border-radius: 4px; font-size: 13px; color: #606266;">
+                                <strong>建议重新生成:</strong> {{ design.ai_prompt_suggestion }}
+                            </div>
                         </div>
                     </div>
                     
-                    <!-- 操作按钮：待审核显示 更换 Tab + 选定/放弃；生成失败仅显示 更换 Tab -->
+                    <!-- 操作按钮：待审核显示 更换 Tab + AI 推荐 + 选定/放弃；生成失败仅显示 更换 Tab -->
                     <div v-if="isPendingStatus(design) || design.status === 'failed'" class="action-buttons">
                         <el-button 
                             type="primary" 
@@ -642,6 +652,14 @@
                             @click="openSwitchTabDialog(design)"
                         >
                             更换 Tab
+                        </el-button>
+                        <el-button 
+                            v-if="isPendingStatus(design)"
+                            type="primary"
+                            :loading="design.aiRecommendLoading"
+                            @click="runAiRecommend(design)"
+                        >
+                            AI 推荐
                         </el-button>
                         <template v-if="isPendingStatus(design)">
                             <el-button 
@@ -706,6 +724,33 @@
                     <el-button type="primary" :loading="addOriginalLoading" @click="confirmAddOriginalImage">添加</el-button>
                 </template>
             </el-dialog>
+
+            <!-- 添加已有设计图弹窗 -->
+            <el-dialog
+                v-model="addDesignDialogVisible"
+                title="添加已有设计图"
+                width="480px"
+                :close-on-click-modal="false"
+                @close="closeAddDesignImageDialog"
+            >
+                <p style="color: #606266; margin-bottom: 12px;">从本地上传图片，将追加到右侧设计图列表，可参与对比与 AI 推荐。支持 png/jpg/jpeg/webp。</p>
+                <el-upload
+                    ref="addDesignUploadRef"
+                    :auto-upload="false"
+                    :limit="10"
+                    accept=".png,.jpg,.jpeg,.webp"
+                    multiple
+                    :on-change="onAddDesignFileChange"
+                    :on-remove="onAddDesignFileRemove"
+                    :file-list="addDesignFileList"
+                >
+                    <el-button type="primary" plain>选择图片</el-button>
+                </el-upload>
+                <template #footer>
+                    <el-button @click="closeAddDesignImageDialog">取消</el-button>
+                    <el-button type="primary" :loading="addDesignLoading" @click="confirmAddDesignImage">上传并添加</el-button>
+                </template>
+            </el-dialog>
             </div>
             <!-- 分页 -->
             <div v-if="designList.length > 0" class="pagination-wrapper">
@@ -755,7 +800,14 @@
                     addOriginalDialogVisible: false,
                     addOriginalDesign: null,
                     addOriginalUrl: '',
-                    addOriginalLoading: false
+                    addOriginalLoading: false,
+                    addDesignDialogVisible: false,
+                    addDesignDesign: null,
+                    addDesignFileList: [],
+                    addDesignLoading: false,
+                    promptConfigVisible: false,
+                    aiRecommendPrompt: '',
+                    promptConfigSaving: false
                 };
             },
             mounted() {
@@ -815,7 +867,8 @@
                                     _excludedOriginalIndices: excludedOriginals,
                                     _showExcluded: false,
                                     _showExcludedOriginals: false,
-                                    _hoverLarge: false
+                                    _hoverLarge: false,
+                                    aiRecommendLoading: false
                                 };
                             });
                             this.pagination.total = data.total || 0;
@@ -928,7 +981,7 @@
                     }
                     return Array.isArray(full) ? full : [];
                 },
-                // 设计图是否被基础检测废弃（一票否决）
+                // 设计图预检未通过时的原因（已并入已排除，可取消排除）
                 getDiscardReason(design, index) {
                     const full = this.getDesignCheckResultsArray(design);
                     const entry = full.find(r => r && Number(r.index) === Number(index));
@@ -938,7 +991,7 @@
                     const e = reasons.find(r => r && Number(r.index) === Number(index));
                     return e && e.reason ? String(e.reason) : null;
                 },
-                // 设计图基础检测结果（通过或废弃的原因），用于气泡展示
+                // 设计图基础检测结果（通过/未通过原因），用于气泡展示
                 getDesignCheckReason(design, index) {
                     const full = this.getDesignCheckResultsArray(design);
                     const entry = full.find(r => r && Number(r.index) === Number(index));
@@ -951,7 +1004,7 @@
                     const entry = list.find(r => r && Number(r.index) === Number(index));
                     return entry && entry.reason != null ? String(entry.reason).trim() || null : null;
                 },
-                // 设计图气泡：已采纳显示 ai_reason（第二步综合评估）；否则显示基础检测原因（通过/废弃）
+                // 设计图气泡：已采纳显示 ai_reason（第二步综合评估）；否则显示基础检测原因（通过/未通过，未通过即已排除可取消）
                 getDesignReason(design, index) {
                     if (design.selected_image_index === index && design.ai_reason) return String(design.ai_reason).trim();
                     return this.getDesignCheckReason(design, index) || this.getDiscardReason(design, index) || null;
@@ -1013,6 +1066,143 @@
                     this.addOriginalDialogVisible = false;
                     this.addOriginalDesign = null;
                     this.addOriginalUrl = '';
+                },
+                openAddDesignImageDialog(design) {
+                    this.addDesignDesign = design;
+                    this.addDesignFileList = [];
+                    this.addDesignDialogVisible = true;
+                },
+                closeAddDesignImageDialog() {
+                    this.addDesignDialogVisible = false;
+                    this.addDesignDesign = null;
+                    this.addDesignFileList = [];
+                },
+                onAddDesignFileChange(file, fileList) {
+                    this.addDesignFileList = fileList;
+                },
+                onAddDesignFileRemove(file, fileList) {
+                    this.addDesignFileList = fileList;
+                },
+                async confirmAddDesignImage() {
+                    if (!this.addDesignDesign || !this.addDesignFileList.length) {
+                        ElMessage.warning('请先选择要上传的图片');
+                        return;
+                    }
+                    const id = this.addDesignDesign.id;
+                    const base = API_BASE_URL.replace(/\/api\/?$/, '');
+                    const uploadUrl = base + '/api/design/upload-design-image';
+                    const urls = [];
+                    this.addDesignLoading = true;
+                    try {
+                        for (const item of this.addDesignFileList) {
+                            if (!item.raw) continue;
+                            const form = new FormData();
+                            form.append('file', item.raw);
+                            form.append('id', id);
+                            const res = await fetch(uploadUrl, {
+                                method: 'POST',
+                                body: form
+                            });
+                            const data = await res.json();
+                            if (data.code !== 0 || !data.data?.url) {
+                                throw new Error(data.message || '上传失败');
+                            }
+                            const url = data.data.url;
+                            urls.push(url.startsWith('http') ? url : (window.location.origin + url));
+                        }
+                        if (urls.length === 0) {
+                            ElMessage.warning('没有成功上传的图片');
+                            return;
+                        }
+                        const addRes = await axios.post(API_BASE_URL + '/design/add-design-image', {
+                            id,
+                            image_urls: urls
+                        });
+                        if (addRes.data && addRes.data.code === 0) {
+                            ElMessage.success(addRes.data.message || '已添加设计图');
+                            this.closeAddDesignImageDialog();
+                            this.loadDesignList();
+                        } else {
+                            ElMessage.error(addRes.data?.message || '添加失败');
+                        }
+                    } catch (err) {
+                        ElMessage.error(err.message || err.response?.data?.message || '上传或添加失败');
+                    } finally {
+                        this.addDesignLoading = false;
+                    }
+                },
+                async openPromptConfig() {
+                    this.promptConfigVisible = !this.promptConfigVisible;
+                    if (this.promptConfigVisible) {
+                        try {
+                            const res = await axios.get(`${API_BASE_URL}/design/config/prompt`);
+                            if (res.data && res.data.code === 0 && res.data.data)
+                                this.aiRecommendPrompt = res.data.data.prompt || '';
+                        } catch (e) {
+                            ElMessage.error('加载提示词失败');
+                        }
+                    }
+                },
+                async savePromptConfig() {
+                    this.promptConfigSaving = true;
+                    try {
+                        const res = await axios.put(`${API_BASE_URL}/design/config/prompt`, { prompt: this.aiRecommendPrompt });
+                        if (res.data && res.data.code === 0) {
+                            ElMessage.success('已保存');
+                        } else {
+                            ElMessage.error(res.data?.message || '保存失败');
+                        }
+                    } catch (e) {
+                        ElMessage.error(e.response?.data?.message || e.message || '保存失败');
+                    } finally {
+                        this.promptConfigSaving = false;
+                    }
+                },
+                async resetDesignCheck(design) {
+                    try {
+                        await ElMessageBox.confirm(
+                            '确定要重置该商品的设计图预检结果吗？清空后，下次 N8N 检查流程会对所有设计图重新做预检。',
+                            '重置预检结果',
+                            { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
+                        );
+                    } catch (e) {
+                        if (e === 'cancel') return;
+                    }
+                    try {
+                        const res = await axios.post(`${API_BASE_URL}/design/reset-design-check`, { id: design.id });
+                        if (res.data && res.data.code === 0) {
+                            ElMessage.success(res.data.message || '已重置预检结果');
+                            this.loadDesignList();
+                        } else {
+                            ElMessage.error(res.data?.message || '重置失败');
+                        }
+                    } catch (e) {
+                        ElMessage.error(e.response?.data?.message || e.message || '重置失败');
+                    }
+                },
+                async runAiRecommend(design) {
+                    design.aiRecommendLoading = true;
+                    try {
+                        const res = await axios.post(`${API_BASE_URL}/design/ai-recommend`, { id: design.id });
+                        if (res.data && res.data.code === 0) {
+                            const d = res.data.data || {};
+                            design.ai_recommendation = d.recommended_index ?? design.ai_recommendation;
+                            design.ai_reason = d.ai_reason ?? design.ai_reason;
+                            design.ai_prompt_suggestion = d.prompt_suggestion ?? d.ai_prompt_suggestion ?? design.ai_prompt_suggestion;
+                            if (d.need_regenerate) {
+                                design.ai_recommendation = null;
+                                design.ai_reason = null;
+                                design.ai_prompt_suggestion = d.prompt_suggestion || d.ai_prompt_suggestion || '建议重新生成';
+                            }
+                            ElMessage.success(d.need_regenerate ? '已评估：建议重新生成' : `已推荐图${d.recommended_index}`);
+                        } else {
+                            ElMessage.error(res.data?.message || 'AI 推荐失败');
+                        }
+                    } catch (e) {
+                        ElMessage.error(e.response?.data?.message || e.message || 'AI 推荐失败');
+                    } finally {
+                        design.aiRecommendLoading = false;
+                    }
                 },
                 async confirmAddOriginalImage() {
                     const lines = (this.addOriginalUrl || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);

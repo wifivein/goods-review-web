@@ -1467,6 +1467,61 @@ def save_tab_mapping():
         }), 500
 
 
+@app.route('/api/design/update-design-images-from-lovart', methods=['POST'])
+def update_design_images_from_lovart():
+    """N8N 从 Lovart 抓取到设计图列表后调用此接口写回；会与库中已有「本地上传」项合并，避免覆盖用户添加的设计图。
+    Body: { tab_id, design_images: [ { url, title }, ... ] } 或 { tab_id, design_images_sql: "JSON 字符串" }。"""
+    try:
+        data = request.json
+        tab_id = data.get('tab_id')
+        design_images_new = data.get('design_images')
+        design_images_sql = data.get('design_images_sql')
+        if not tab_id:
+            return jsonify({'code': -1, 'message': 'tab_id 不能为空'}), 400
+        if design_images_new is None and design_images_sql is not None:
+            try:
+                s = design_images_sql.strip() if isinstance(design_images_sql, str) else str(design_images_sql)
+                s = s.replace("''", "'")
+                design_images_new = json.loads(s)
+            except Exception:
+                design_images_new = []
+        if not isinstance(design_images_new, list):
+            design_images_new = []
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT id, design_images FROM lovart_design_tab_mapping WHERE tab_id = %s',
+            (tab_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'code': -1, 'message': '未找到对应记录'}), 404
+        current = row.get('design_images')
+        if current and isinstance(current, str) and current.strip():
+            try:
+                current = json.loads(current)
+            except Exception:
+                current = []
+        if not isinstance(current, list):
+            current = []
+        local_uploads = [x for x in current if isinstance(x, dict) and (x.get('title') == '本地上传' or (x.get('url') and 'design_upload_' in str(x.get('url'))))]
+        merged = list(design_images_new)
+        for x in local_uploads:
+            merged.append(x)
+        merged_json = json.dumps(merged, ensure_ascii=False)
+        cursor.execute(
+            'UPDATE lovart_design_tab_mapping SET design_images = %s, updated_at = NOW() WHERE tab_id = %s',
+            (merged_json, tab_id)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({'code': 0, 'message': 'success', 'data': {'tab_id': tab_id, 'merged_count': len(merged)}})
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
 @app.route('/api/design/update-completed', methods=['POST'])
 def update_design_completed():
     """将记录标记为最终状态「已处理完」（completed）。仅当下载+改名+横竖版等全部做完时由调用方（如 N8N）调用。
@@ -1577,7 +1632,7 @@ def get_pending_review():
                    design_image_1_url, design_image_1_title,
                    design_image_2_url, design_image_2_title,
                    design_image_3_url, design_image_3_title,
-                   ai_recommendation, ai_reason,
+                   ai_recommendation, ai_reason, ai_prompt_suggestion,
                    status, selected_image_index, created_at, completed_at
             FROM lovart_design_tab_mapping 
             ORDER BY (CASE WHEN status = 'generating' THEN 0 ELSE 1 END), COALESCE(completed_at, created_at) DESC
@@ -1587,7 +1642,7 @@ def get_pending_review():
             cursor.execute(list_sql, (limit, offset))
             items = cursor.fetchall()
         except pymysql.err.OperationalError as e:
-            if 'Unknown column' in str(e) and ('original_excluded_indices' in str(e) or 'original_classify_reasons' in str(e) or 'design_discard_reasons' in str(e) or 'design_check_results' in str(e)):
+            if 'Unknown column' in str(e) and ('original_excluded_indices' in str(e) or 'original_classify_reasons' in str(e) or 'design_discard_reasons' in str(e) or 'design_check_results' in str(e) or 'ai_prompt_suggestion' in str(e)):
                 # 回退：先尝试查 original_referable_indices（旧库兼容），再尝试不查任何新列
                 list_sql_with_referable = """
                     SELECT id, tab_id, tab_url, product_id, product_name, category,
@@ -1623,6 +1678,7 @@ def get_pending_review():
                         it['original_classify_reasons'] = []
                         it['design_discard_reasons'] = []
                         it['design_check_results'] = []
+                        it['ai_prompt_suggestion'] = None
                 except pymysql.err.OperationalError as e2:
                     if 'Unknown column' in str(e2):
                         cursor.execute(list_sql_minimal, (limit, offset))
@@ -1632,6 +1688,7 @@ def get_pending_review():
                             it['original_classify_reasons'] = []
                             it['design_discard_reasons'] = []
                             it['design_check_results'] = []
+                            it['ai_prompt_suggestion'] = None
                     else:
                         raise
             else:
@@ -1865,6 +1922,371 @@ def set_excluded_originals():
         return jsonify({'code': -1, 'message': str(e)}), 500
 
 
+# ---------- AI 推荐配置（页面可修改提示词）-----------
+DESIGN_AI_RECOMMEND_PROMPT_KEY = 'design_ai_recommend_prompt'
+DEFAULT_AI_RECOMMEND_PROMPT = (
+    '你看到的前 {{original_count}} 张是商品原图（参考），后 {{design_count}} 张是设计图（候选）。'
+    '请根据原图对每张设计图做还原度评分（0-1），并严格按 JSON 输出：'
+    '{"scores":[{"index":1,"score":0.85,"reason":"..."},...],"best_index":1,"overall_reason":"...","need_regenerate":false,"prompt_suggestion":null}。'
+    'index 为设计图序号（1 到 {{design_count}}）。若所有设计图还原度都低于 0.6，则 need_regenerate 为 true，prompt_suggestion 给出重新生成的具体提示词建议（一句话）。只输出 JSON，不要其他文字。'
+)
+
+
+@app.route('/api/design/config/prompt', methods=['GET'])
+def get_design_ai_recommend_prompt():
+    """获取 AI 推荐提示词（页面配置用）"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT cvalue FROM goods_review_config WHERE ckey = %s",
+                (DESIGN_AI_RECOMMEND_PROMPT_KEY,)
+            )
+            row = cursor.fetchone()
+            prompt = (row['cvalue'] or '').strip() if row and row.get('cvalue') else DEFAULT_AI_RECOMMEND_PROMPT
+        except pymysql.err.OperationalError as e:
+            if 'does not exist' in str(e).lower() or 'Unknown table' in str(e):
+                prompt = DEFAULT_AI_RECOMMEND_PROMPT
+            else:
+                raise
+        cursor.close()
+        conn.close()
+        return jsonify({'code': 0, 'message': 'success', 'data': {'prompt': prompt}})
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
+@app.route('/api/design/config/prompt', methods=['PUT', 'POST'])
+def set_design_ai_recommend_prompt():
+    """保存 AI 推荐提示词（页面配置用）"""
+    try:
+        data = request.json or {}
+        prompt = (data.get('prompt') or '').strip()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO goods_review_config (ckey, cvalue) VALUES (%s, %s) ON DUPLICATE KEY UPDATE cvalue = %s",
+            (DESIGN_AI_RECOMMEND_PROMPT_KEY, prompt, prompt)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({'code': 0, 'message': 'success', 'data': {'prompt': prompt}})
+    except pymysql.err.OperationalError as e:
+        if 'does not exist' in str(e).lower() or 'Unknown table' in str(e):
+            return jsonify({'code': -1, 'message': '请先执行 sql/add_goods_review_config.sql 创建配置表'}), 400
+        raise
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
+@app.route('/api/design/ai-recommend', methods=['POST'])
+def design_ai_recommend():
+    """对一条记录执行 AI 推荐：未排除原图 + 未排除且通过基础检测的设计图，综合评分选最优或建议重新生成。"""
+    try:
+        data = request.json or {}
+        mapping_id = data.get('id')
+        if not mapping_id:
+            return jsonify({'code': -1, 'message': 'id 不能为空'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """SELECT id, original_images_urls, original_excluded_indices,
+                          design_images, design_image_1_url, design_image_2_url, design_image_3_url,
+                          excluded_image_indices, design_check_results, design_images_uploaded_urls,
+                          ai_recommendation, ai_reason
+                   FROM lovart_design_tab_mapping WHERE id = %s""",
+                (mapping_id,)
+            )
+        except pymysql.err.OperationalError as e:
+            if 'Unknown column' in str(e) and 'design_images_uploaded_urls' in str(e):
+                cursor.execute(
+                    """SELECT id, original_images_urls, original_excluded_indices,
+                              design_images, design_image_1_url, design_image_2_url, design_image_3_url,
+                              excluded_image_indices, design_check_results,
+                              ai_recommendation, ai_reason
+                       FROM lovart_design_tab_mapping WHERE id = %s""",
+                    (mapping_id,)
+                )
+            else:
+                raise
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': -1, 'message': '未找到对应记录'}), 404
+
+        # 未排除的原图 URL 列表
+        urls_raw = row.get('original_images_urls')
+        if urls_raw and isinstance(urls_raw, str):
+            try:
+                urls_raw = json.loads(urls_raw) if urls_raw.strip() else []
+            except Exception:
+                urls_raw = []
+        if not isinstance(urls_raw, list):
+            urls_raw = []
+        excluded_originals = row.get('original_excluded_indices')
+        if excluded_originals and isinstance(excluded_originals, str):
+            try:
+                excluded_originals = json.loads(excluded_originals) if excluded_originals.strip() else []
+            except Exception:
+                excluded_originals = []
+        if not isinstance(excluded_originals, list):
+            excluded_originals = []
+        original_urls = [u for i, u in enumerate(urls_raw) if u and i not in excluded_originals]
+        if not original_urls:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': -1, 'message': '没有可用的商品原图（请先添加或取消排除）'}), 400
+
+        # 上传后的设计图 URL（N8N 写回，服务端可拉；优先用此拉图）
+        uploaded_url_map = {}
+        uploaded_raw = row.get('design_images_uploaded_urls')
+        if uploaded_raw and isinstance(uploaded_raw, str):
+            try:
+                uploaded_list = json.loads(uploaded_raw) if uploaded_raw.strip() else []
+            except Exception:
+                uploaded_list = []
+        else:
+            uploaded_list = uploaded_raw if isinstance(uploaded_raw, list) else []
+        for x in uploaded_list:
+            if isinstance(x, dict) and x.get('url') and x.get('index') is not None:
+                uploaded_url_map[int(x['index'])] = str(x['url']).strip()
+
+        # 未排除且通过基础检测的设计图：(index, url)，url 优先用上传后的
+        design_list = []
+        dm = row.get('design_images')
+        if dm and isinstance(dm, str):
+            try:
+                dm = json.loads(dm) if dm.strip() else []
+            except Exception:
+                dm = []
+        if isinstance(dm, list) and len(dm) > 0:
+            for i, item in enumerate(dm):
+                idx_1based = i + 1
+                url = item.get('url') if isinstance(item, dict) else (item if isinstance(item, str) else '')
+                url = uploaded_url_map.get(idx_1based) or url
+                if url:
+                    design_list.append((idx_1based, url))
+        else:
+            for i in (1, 2, 3):
+                u = uploaded_url_map.get(i) or row.get(f'design_image_{i}_url')
+                if u:
+                    design_list.append((i, u))
+        excluded_designs = row.get('excluded_image_indices') or []
+        if isinstance(excluded_designs, str):
+            try:
+                excluded_designs = json.loads(excluded_designs) if excluded_designs.strip() else []
+            except Exception:
+                excluded_designs = []
+        check_results = row.get('design_check_results')
+        if check_results and isinstance(check_results, str):
+            try:
+                check_results = json.loads(check_results) if check_results.strip() else []
+            except Exception:
+                check_results = []
+        # 只保留：未排除 且 (有 design_check_results 时须 pass=True)
+        design_candidates = []
+        for idx_1based, url in design_list:
+            if idx_1based in excluded_designs:
+                continue
+            if isinstance(check_results, list) and len(check_results) > 0:
+                entry = next((r for r in check_results if r and int(r.get('index', -1)) == idx_1based), None)
+                if entry and entry.get('pass') is not True:
+                    continue
+            design_candidates.append((idx_1based, url))
+
+        if not design_candidates:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': -1, 'message': '没有可用的设计图（请先取消排除或完成基础检测）'}), 400
+
+        # 加载配置：提示词、API Key、阈值（配置表优先，缺省用环境变量）
+        def _get_config(key: str, default: str = "") -> str:
+            try:
+                cursor.execute("SELECT cvalue FROM goods_review_config WHERE ckey = %s", (key,))
+                row = cursor.fetchone()
+                v = (row['cvalue'] or '').strip() if row and row.get('cvalue') else default
+                return v
+            except Exception:
+                return default
+
+        prompt_tpl = _get_config(DESIGN_AI_RECOMMEND_PROMPT_KEY, DEFAULT_AI_RECOMMEND_PROMPT)
+        prompt_tpl = prompt_tpl.replace('{{original_count}}', str(len(original_urls)))
+        prompt_tpl = prompt_tpl.replace('{{design_count}}', str(len(design_candidates)))
+
+        api_key = _get_config('bigmodel_api_key', '').strip() or os.getenv('BIGMODEL_API_KEY') or os.getenv('GLM_API_KEY') or ''
+        if not api_key:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': -1, 'message': '未配置 BIGMODEL_API_KEY（配置表或环境变量）'}), 503
+
+        threshold_str = _get_config('design_ai_recommend_threshold', '').strip() or os.getenv('AI_RECOMMEND_THRESHOLD', '0.6')
+        try:
+            threshold = float(threshold_str)
+        except (TypeError, ValueError):
+            threshold = 0.6
+
+        # 图片顺序：先原图，再设计图（按 index 1,2,3）
+        image_urls = list(original_urls) + [u for _, u in sorted(design_candidates, key=lambda x: x[0])]
+
+        from vision_api import describe_image
+        success, result = describe_image(image_urls, prompt=prompt_tpl, response_format_json=True, api_key=api_key)
+        if not success:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': -1, 'message': str(result)}), 500
+
+        try:
+            if isinstance(result, str):
+                out = json.loads(result)
+            else:
+                out = result
+        except Exception as e:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': -1, 'message': f'模型输出非 JSON: {result[:200]}'}), 500
+
+        scores = out.get('scores') or []
+        best_index = out.get('best_index')
+        overall_reason = (out.get('overall_reason') or '').strip()
+        need_regenerate = out.get('need_regenerate') is True
+        prompt_suggestion = (out.get('prompt_suggestion') or '').strip() or None
+
+        max_score = 0.0
+        if isinstance(scores, list):
+            for s in scores:
+                if isinstance(s, dict) and 'score' in s:
+                    try:
+                        max_score = max(max_score, float(s.get('score', 0)))
+                    except (TypeError, ValueError):
+                        pass
+        if not need_regenerate and max_score < threshold:
+            need_regenerate = True
+            if not prompt_suggestion:
+                prompt_suggestion = f'最高还原度 {max_score:.2f} 低于阈值 {threshold}，建议重新生成并明确风格要求。'
+
+        # 写回 DB（兼容无 ai_prompt_suggestion 列）
+        if need_regenerate:
+            ai_rec = None
+            ai_reason_val = None
+            ai_prompt_val = prompt_suggestion
+        else:
+            ai_rec = int(best_index) if best_index is not None else None
+            if ai_rec and ai_rec not in [r[0] for r in design_candidates]:
+                ai_rec = design_candidates[0][0] if design_candidates else None
+            ai_reason_val = overall_reason or None
+            ai_prompt_val = None
+
+        try:
+            cursor.execute(
+                """UPDATE lovart_design_tab_mapping
+                   SET ai_recommendation = %s, ai_reason = %s, ai_prompt_suggestion = %s, updated_at = NOW()
+                   WHERE id = %s""",
+                (ai_rec, ai_reason_val, ai_prompt_val, mapping_id)
+            )
+        except pymysql.err.OperationalError as e:
+            if 'Unknown column' in str(e) and 'ai_prompt_suggestion' in str(e):
+                cursor.execute(
+                    """UPDATE lovart_design_tab_mapping
+                       SET ai_recommendation = %s, ai_reason = %s, updated_at = NOW()
+                       WHERE id = %s""",
+                    (ai_rec, ai_reason_val, mapping_id)
+                )
+                ai_prompt_val = prompt_suggestion if need_regenerate else None
+            else:
+                raise
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {
+                'recommended_index': ai_rec,
+                'ai_reason': ai_reason_val,
+                'need_regenerate': need_regenerate,
+                'prompt_suggestion': ai_prompt_val or prompt_suggestion
+            }
+        })
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
+@app.route('/api/design/reset-design-check', methods=['POST'])
+def reset_design_check():
+    """重置该条记录的设计图预检结果：清空 design_check_results、design_discard_reasons、design_images_uploaded_urls；
+    并从排除列表中移除因预检而加入的排除项，下次 N8N 会对所有设计图重新预检。"""
+    try:
+        data = request.json
+        mapping_id = data.get('id')
+        if not mapping_id:
+            return jsonify({'code': -1, 'message': 'id 不能为空'}), 400
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        discarded_indices = []
+        current_excluded = []
+        try:
+            cursor.execute(
+                "SELECT design_check_results, excluded_image_indices FROM lovart_design_tab_mapping WHERE id = %s",
+                (mapping_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                dc = row.get('design_check_results')
+                if dc and isinstance(dc, str) and dc.strip():
+                    try:
+                        arr = json.loads(dc)
+                        if isinstance(arr, list):
+                            discarded_indices = [int(x['index']) for x in arr if isinstance(x, dict) and x.get('pass') is not True and x.get('index') is not None]
+                    except Exception:
+                        pass
+                ex = row.get('excluded_image_indices')
+                if ex and isinstance(ex, str) and ex.strip():
+                    try:
+                        current_excluded = json.loads(ex) if isinstance(ex, str) else ex
+                        if isinstance(current_excluded, list):
+                            current_excluded = [int(x) for x in current_excluded if isinstance(x, (int, float))]
+                        else:
+                            current_excluded = []
+                    except Exception:
+                        current_excluded = []
+                elif isinstance(ex, list):
+                    current_excluded = [int(x) for x in ex if isinstance(x, (int, float))]
+        except pymysql.err.OperationalError:
+            pass
+        new_excluded = sorted(set(current_excluded) - set(discarded_indices))
+        excluded_json = json.dumps(new_excluded, ensure_ascii=False)
+        try:
+            cursor.execute(
+                """UPDATE lovart_design_tab_mapping 
+                   SET design_discard_reasons = NULL, design_check_results = NULL, design_images_uploaded_urls = NULL, excluded_image_indices = %s, updated_at = NOW() 
+                   WHERE id = %s""",
+                (excluded_json, mapping_id)
+            )
+        except pymysql.err.OperationalError as e:
+            if 'Unknown column' in str(e):
+                cursor.execute(
+                    "UPDATE lovart_design_tab_mapping SET design_discard_reasons = NULL, design_check_results = NULL, design_images_uploaded_urls = NULL, updated_at = NOW() WHERE id = %s",
+                    (mapping_id,)
+                )
+            else:
+                raise
+        rowcount = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+        if rowcount == 0:
+            return jsonify({'code': -1, 'message': '未找到对应记录'}), 404
+        return jsonify({'code': 0, 'message': '已重置预检结果，预检导致的排除已清除，下次 N8N 检查会对所有设计图重新预检', 'data': {'id': mapping_id}})
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
 @app.route('/api/design/set-discard-reasons', methods=['POST'])
 def set_design_discard_reasons():
     """持久化设计图基础检测结果：支持完整结果 design_check_results（每张图 pass+reason），或仅 design_discard_reasons（兼容旧 N8N）"""
@@ -1875,7 +2297,7 @@ def set_design_discard_reasons():
         design_discard_reasons = data.get('design_discard_reasons')
         if mapping_id is None:
             return jsonify({'code': -1, 'message': 'id 不能为空'}), 400
-        # 若传了完整结果，从中推导废弃列表并写两列；否则只写 design_discard_reasons（兼容）
+        # 若传了完整结果，从中推导废弃列表并写两列；可同时传 design_images_uploaded 写回上传后 URL（供 AI 推荐拉图）
         if isinstance(design_check_results, list) and len(design_check_results) > 0:
             normalized_full = []
             for x in design_check_results:
@@ -1890,19 +2312,84 @@ def set_design_discard_reasons():
             discard_from_full = [{'index': x['index'], 'reason': x['reason']} for x in normalized_full if x.get('pass') is not True]
             check_json = json.dumps(normalized_full, ensure_ascii=False)
             discard_json = json.dumps(discard_from_full, ensure_ascii=False)
+            discarded_indices = [int(x['index']) for x in discard_from_full if x.get('index') is not None]
+            design_images_uploaded = data.get('design_images_uploaded')
+            uploaded_json = None
+            if isinstance(design_images_uploaded, list) and len(design_images_uploaded) > 0:
+                normalized_uploaded = []
+                for x in design_images_uploaded:
+                    if isinstance(x, dict) and x.get('index') is not None and x.get('url'):
+                        idx = int(x['index']) if isinstance(x.get('index'), (int, float)) else None
+                        if idx is not None and idx >= 0:
+                            normalized_uploaded.append({'index': idx, 'url': str(x['url']).strip()})
+                if normalized_uploaded:
+                    uploaded_json = json.dumps(normalized_uploaded, ensure_ascii=False)
             conn = get_db_connection()
             cursor = conn.cursor()
+            excluded_json = None
+            if discarded_indices:
+                cursor.execute("SELECT excluded_image_indices FROM lovart_design_tab_mapping WHERE id = %s", (mapping_id,))
+                row = cursor.fetchone()
+                current_excluded = []
+                if row and row.get('excluded_image_indices'):
+                    raw = row['excluded_image_indices']
+                    try:
+                        current_excluded = json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
+                    except Exception:
+                        pass
+                current_excluded = [int(x) for x in current_excluded if isinstance(x, (int, float))]
+                merged_excluded = sorted(set(current_excluded) | set(discarded_indices))
+                excluded_json = json.dumps(merged_excluded, ensure_ascii=False)
             try:
-                cursor.execute(
-                    "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, design_check_results = %s, updated_at = NOW() WHERE id = %s",
-                    (discard_json, check_json, mapping_id)
-                )
+                if uploaded_json and excluded_json is not None:
+                    cursor.execute(
+                        "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, design_check_results = %s, design_images_uploaded_urls = %s, excluded_image_indices = %s, updated_at = NOW() WHERE id = %s",
+                        (discard_json, check_json, uploaded_json, excluded_json, mapping_id)
+                    )
+                elif uploaded_json:
+                    cursor.execute(
+                        "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, design_check_results = %s, design_images_uploaded_urls = %s, updated_at = NOW() WHERE id = %s",
+                        (discard_json, check_json, uploaded_json, mapping_id)
+                    )
+                elif excluded_json is not None:
+                    cursor.execute(
+                        "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, design_check_results = %s, excluded_image_indices = %s, updated_at = NOW() WHERE id = %s",
+                        (discard_json, check_json, excluded_json, mapping_id)
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, design_check_results = %s, updated_at = NOW() WHERE id = %s",
+                        (discard_json, check_json, mapping_id)
+                    )
             except pymysql.err.OperationalError as e:
-                if 'Unknown column' in str(e) and 'design_check_results' in str(e):
+                err_str = str(e)
+                if 'Unknown column' in err_str and 'design_check_results' in err_str:
                     cursor.execute(
                         "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, updated_at = NOW() WHERE id = %s",
                         (discard_json, mapping_id)
                     )
+                elif 'Unknown column' in err_str and 'design_images_uploaded_urls' in err_str:
+                    if excluded_json is not None:
+                        cursor.execute(
+                            "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, design_check_results = %s, excluded_image_indices = %s, updated_at = NOW() WHERE id = %s",
+                            (discard_json, check_json, excluded_json, mapping_id)
+                        )
+                    else:
+                        cursor.execute(
+                            "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, design_check_results = %s, updated_at = NOW() WHERE id = %s",
+                            (discard_json, check_json, mapping_id)
+                        )
+                elif 'Unknown column' in err_str and 'excluded_image_indices' in err_str:
+                    if uploaded_json:
+                        cursor.execute(
+                            "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, design_check_results = %s, design_images_uploaded_urls = %s, updated_at = NOW() WHERE id = %s",
+                            (discard_json, check_json, uploaded_json, mapping_id)
+                        )
+                    else:
+                        cursor.execute(
+                            "UPDATE lovart_design_tab_mapping SET design_discard_reasons = %s, design_check_results = %s, updated_at = NOW() WHERE id = %s",
+                            (discard_json, check_json, mapping_id)
+                        )
                 else:
                     raise
             rowcount = cursor.rowcount
@@ -1940,8 +2427,10 @@ def set_design_discard_reasons():
 
 
 # 设计图临时目录：大模型检测完成后可删临时图（N8N 上传到 /opt/images 的 design_*.png）
+# 本地上传的设计图命名为 design_upload_*，不参与 delete-temp-images 删除
 DESIGN_IMAGES_DIR = os.getenv('DESIGN_IMAGES_DIR', '/opt/images')
 DESIGN_TEMP_FILENAME_PATTERN = re.compile(r'^design_\d+_\d+\.(png|jpg|jpeg|webp)$', re.IGNORECASE)
+DESIGN_UPLOAD_EXT = re.compile(r'^\.(png|jpg|jpeg|webp)$', re.IGNORECASE)
 
 
 @app.route('/api/design/delete-temp-images', methods=['POST'])
@@ -2227,6 +2716,139 @@ def add_original_image():
             'code': 0,
             'message': f'已添加 {len(to_add)} 张原图',
             'data': {'id': mapping_id, 'count': len(urls)}
+        })
+    except Exception as e:
+        return jsonify({'code': -1, 'message': f'操作失败: {str(e)}'}), 500
+
+
+@app.route('/api/design/upload-design-image', methods=['POST'])
+def upload_design_image():
+    """本地上传设计图：multipart 文件，存到 DESIGN_IMAGES_DIR，返回可访问 URL（/images/xxx）。"""
+    import time
+    import uuid
+    try:
+        if 'file' not in request.files and 'image' not in request.files:
+            return jsonify({'code': -1, 'message': '请选择要上传的图片文件'}), 400
+        f = request.files.get('file') or request.files.get('image')
+        if not f or not f.filename:
+            return jsonify({'code': -1, 'message': '未选择有效文件'}), 400
+        ext = os.path.splitext(f.filename)[1]
+        if not ext or not DESIGN_UPLOAD_EXT.match(ext):
+            return jsonify({'code': -1, 'message': '仅支持 png/jpg/jpeg/webp'}), 400
+        mapping_id = request.form.get('id', '0')
+        safe_id = re.sub(r'[^\w\-]', '', str(mapping_id))[:32] if mapping_id else '0'
+        base_dir = os.path.abspath(DESIGN_IMAGES_DIR)
+        os.makedirs(base_dir, exist_ok=True)
+        ts = int(time.time() * 1000)
+        uid = uuid.uuid4().hex[:8]
+        filename = f'design_upload_{safe_id}_{ts}_{uid}{ext}'
+        path = os.path.join(base_dir, filename)
+        path = os.path.abspath(path)
+        if not path.startswith(base_dir) or os.path.dirname(path) != base_dir:
+            return jsonify({'code': -1, 'message': '文件名非法'}), 400
+        f.save(path)
+        url = f'/images/{filename}'
+        return jsonify({'code': 0, 'message': 'success', 'data': {'url': url, 'filename': filename}})
+    except Exception as e:
+        return jsonify({'code': -1, 'message': f'上传失败: {str(e)}'}), 500
+
+
+@app.route('/api/design/add-design-image', methods=['POST'])
+def add_design_image():
+    """将上传后的设计图 URL 追加到该记录的 design_images，并视情况追加到 design_images_uploaded_urls（本服务 /images/ 则同时写入，供 AI 推荐拉图）。"""
+    try:
+        data = request.json
+        mapping_id = data.get('id')
+        image_urls = data.get('image_urls')
+        image_url = data.get('image_url')
+        if not mapping_id:
+            return jsonify({'code': -1, 'message': 'id不能为空'}), 400
+        if image_urls is not None:
+            if not isinstance(image_urls, list):
+                return jsonify({'code': -1, 'message': 'image_urls 必须是数组'}), 400
+            to_add = [u.strip() for u in image_urls if u and isinstance(u, str) and u.strip()]
+        elif image_url and isinstance(image_url, str):
+            to_add = [image_url.strip()] if image_url.strip() else []
+        else:
+            to_add = []
+        if not to_add:
+            return jsonify({'code': -1, 'message': '请至少提供一个有效的 image_url 或 image_urls'}), 400
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT id, design_images, design_images_uploaded_urls FROM lovart_design_tab_mapping WHERE id = %s',
+            (mapping_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'code': -1, 'message': '未找到对应记录'}), 404
+        design_images = row.get('design_images')
+        if design_images is not None and isinstance(design_images, str) and design_images.strip():
+            try:
+                design_images = json.loads(design_images)
+            except Exception:
+                design_images = []
+        if not isinstance(design_images, list):
+            design_images = []
+        uploaded_raw = row.get('design_images_uploaded_urls')
+        if uploaded_raw is not None and isinstance(uploaded_raw, str) and uploaded_raw.strip():
+            try:
+                uploaded_list = json.loads(uploaded_raw)
+            except Exception:
+                uploaded_list = []
+        else:
+            uploaded_list = []
+        if not isinstance(uploaded_list, list):
+            uploaded_list = []
+        base_url = request.url_root.rstrip('/')
+        def is_same_origin(url):
+            if not url:
+                return False
+            u = str(url).strip()
+            if u.startswith('/images/'):
+                return True
+            if base_url and u.startswith(base_url):
+                return True
+            return False
+        for u in to_add:
+            design_images.append({'url': u, 'title': '本地上传'})
+            idx_1based = len(design_images)
+            if is_same_origin(u):
+                full_url = u if (str(u).startswith('http://') or str(u).startswith('https://')) else ((base_url + u) if u.startswith('/') and base_url else u)
+                uploaded_list.append({'index': idx_1based, 'url': full_url})
+        design_images_json = json.dumps(design_images, ensure_ascii=False)
+        uploaded_json = json.dumps(uploaded_list, ensure_ascii=False) if uploaded_list else None
+        try:
+            if uploaded_json:
+                cursor.execute(
+                    """UPDATE lovart_design_tab_mapping 
+                       SET design_images = %s, design_images_uploaded_urls = %s, updated_at = NOW() 
+                       WHERE id = %s""",
+                    (design_images_json, uploaded_json, mapping_id)
+                )
+            else:
+                cursor.execute(
+                    """UPDATE lovart_design_tab_mapping 
+                       SET design_images = %s, updated_at = NOW() 
+                       WHERE id = %s""",
+                    (design_images_json, mapping_id)
+                )
+        except pymysql.err.OperationalError as e:
+            if 'Unknown column' in str(e) and 'design_images_uploaded_urls' in str(e):
+                cursor.execute(
+                    """UPDATE lovart_design_tab_mapping SET design_images = %s, updated_at = NOW() WHERE id = %s""",
+                    (design_images_json, mapping_id)
+                )
+            else:
+                raise
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({
+            'code': 0,
+            'message': f'已添加 {len(to_add)} 张设计图',
+            'data': {'id': mapping_id, 'count': len(design_images)}
         })
     except Exception as e:
         return jsonify({'code': -1, 'message': f'操作失败: {str(e)}'}), 500

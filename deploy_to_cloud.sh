@@ -45,8 +45,25 @@ fi
 echo "✓ 环境检查通过"
 echo ""
 
+# 步骤0: 本地 Python 语法检查（避免有语法错误的代码被部署）
+echo "[0/6] 本地代码检查（Python 语法）..."
+FAILED=""
+for f in backend/*.py; do
+    if [ -f "$f" ] && ! python3 -m py_compile "$f" 2>/dev/null; then
+        echo "❌ 语法错误: $f"
+        python3 -m py_compile "$f" 2>&1 || true
+        FAILED=1
+    fi
+done
+if [ -n "$FAILED" ]; then
+    echo "❌ 存在语法错误，已中止部署。请修复后再运行。"
+    exit 1
+fi
+echo "✓ 语法检查通过"
+echo ""
+
 # 步骤1: 打包项目
-echo "[1/5] 打包项目..."
+echo "[1/6] 打包项目..."
 TAR_FILE="goods_review_web_$(date +%Y%m%d_%H%M%S).tar.gz"
 cd ..
 # 排除本机敏感/本地配置，避免覆盖服务器上的 docker/.env（服务器用脚本默认或已有配置）
@@ -66,7 +83,7 @@ echo "✓ 打包完成: $TAR_FILE"
 echo ""
 
 # 步骤2: 上传到云服务器
-echo "[2/5] 上传到云服务器..."
+echo "[2/6] 上传到云服务器..."
 scp -i "${SSH_KEY/#\~/$HOME}" "$TAR_FILE" ${CLOUD_USER}@${CLOUD_HOST}:/tmp/
 
 if [ $? -ne 0 ]; then
@@ -78,7 +95,7 @@ echo "✓ 上传完成"
 echo ""
 
 # 步骤3: 在云服务器上解压和部署
-echo "[3/5] 在云服务器上部署..."
+echo "[3/6] 在云服务器上部署..."
 ssh -i "${SSH_KEY/#\~/$HOME}" ${CLOUD_USER}@${CLOUD_HOST} << EOF
 set -e
 
@@ -134,20 +151,21 @@ sleep 5
 echo "检查服务状态..."
 docker-compose ps
 
-echo "检查后端健康状态..."
-for i in {1..10}; do
-    if curl -s http://localhost:5001/api/health > /dev/null 2>&1; then
-        echo "✓ 后端服务运行正常"
+echo "检查服务（通过 Nginx 8080 统一入口）..."
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/health | grep -q 200; then
+        echo "✓ 后端 API 运行正常 (8080/api/health)"
         break
+    fi
+    if [ "\$i" -eq 10 ]; then
+        echo "⚠️  后端未响应，请检查: cd ${CLOUD_DIR}/docker && docker-compose logs backend"
     fi
     sleep 2
 done
-
-echo "检查前端服务..."
-if curl -s http://localhost:8080 > /dev/null 2>&1; then
-    echo "✓ 前端服务运行正常"
+if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 | grep -q 200; then
+    echo "✓ 前端页面可访问 (8080)"
 else
-    echo "⚠️  前端服务可能未正常启动"
+    echo "⚠️  前端可能未正常启动"
 fi
 
 echo ""
@@ -155,9 +173,8 @@ echo "=========================================="
 echo "  ✅ 部署完成！"
 echo "=========================================="
 echo ""
-echo "📌 访问地址:"
-echo "   前端: http://${CLOUD_HOST}:8080"
-echo "   后端API: http://${CLOUD_HOST}:5001/api"
+echo "📌 访问地址（API 与前端均通过 8080）:"
+echo "   页面与 API: http://${CLOUD_HOST}:8080   (API 路径: /api/...)"
 echo ""
 EOF
 
@@ -168,29 +185,27 @@ fi
 
 # 步骤4: 清理本地临时文件
 echo ""
-echo "[4/5] 清理临时文件..."
+echo "[4/6] 清理临时文件..."
 rm -f "$TAR_FILE"
 echo "✓ 清理完成"
 echo ""
 
 # 步骤5: 显示访问信息
-echo "[5/5] 部署完成！"
+echo "[5/6] 部署完成！"
 echo ""
 echo "=========================================="
 echo "  ✅ 部署成功！"
 echo "=========================================="
 echo ""
-echo "📌 访问地址:"
-echo "   前端: http://${CLOUD_HOST}:8080"
-echo "   后端API: http://${CLOUD_HOST}:5001/api/health"
+echo "📌 访问地址（仅开放 8080）:"
+echo "   页面与 API: http://${CLOUD_HOST}:8080"
 echo ""
 echo "📋 常用命令:"
 echo "   SSH登录: ssh -i ${SSH_KEY} ${CLOUD_USER}@${CLOUD_HOST}"
-echo "   查看日志: ssh -i ${SSH_KEY} ${CLOUD_USER}@${CLOUD_HOST} 'cd ${CLOUD_DIR}/docker && docker-compose logs -f'"
+echo "   查看日志: ssh -i ${SSH_KEY} ${CLOUD_USER}@${CLOUD_HOST} 'cd ${CLOUD_DIR}/docker && docker-compose logs -f backend'"
 echo "   重启服务: ssh -i ${SSH_KEY} ${CLOUD_USER}@${CLOUD_HOST} 'cd ${CLOUD_DIR}/docker && docker-compose restart'"
 echo ""
-echo "🔍 如果无法访问，请检查:"
-echo "   1. 云服务器防火墙是否开放 8080 和 5001 端口"
-echo "   2. 安全组规则是否允许访问"
-echo "   3. 查看服务日志: ssh -i ${SSH_KEY} ${CLOUD_USER}@${CLOUD_HOST} 'cd ${CLOUD_DIR}/docker && docker-compose logs'"
+echo "🔍 若 502，先看后端日志与 DB 配置:"
+echo "   ssh -i ${SSH_KEY} ${CLOUD_USER}@${CLOUD_HOST} 'cd ${CLOUD_DIR}/docker && docker-compose logs --tail 80 backend && cat .env | grep -E \"^DB_\"'"
+echo "   云服务器防火墙/安全组需开放 8080"
 echo ""

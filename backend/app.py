@@ -508,9 +508,34 @@ def _vision_response(data, status=200):
 
 def _parse_vision_image_inputs(data):
     """从请求体解析出图片列表，每项为 URL 或 data:image/...;base64,...。
-    支持 image_base64 / image_base64_list（客户端拉图后传 base64，避免后端 Network unreachable）。
+    支持混合传图：images 数组内每项可为 url 或 base64；也支持仅 image_base64_list / image_urls 等。
     """
-    # 1) 客户端直接传 base64，后端不访问外网
+    # 0) 混合列表：images 中每项为 { "url": "..." } 或 { "base64": "...", "mime": "..." } 或直接字符串 URL/data URL
+    images = data.get('images')
+    if isinstance(images, list) and images:
+        out = []
+        for item in images:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                s = item.strip()
+                if s.startswith(('http://', 'https://', 'data:image/')):
+                    out.append(s)
+                continue
+            if isinstance(item, dict):
+                if item.get('url'):
+                    u = str(item['url']).strip()
+                    if u.startswith(('http://', 'https://', 'data:image/')):
+                        out.append(u)
+                    continue
+                if item.get('base64'):
+                    mime = (item.get('mime') or 'image/png').strip()
+                    if not mime.startswith('image/'):
+                        mime = f"image/{mime}"
+                    out.append(f"data:{mime};base64,{str(item['base64']).strip()}")
+        if out:
+            return out
+    # 1) 仅 base64 列表
     base64_list = data.get('image_base64_list')
     if isinstance(base64_list, list) and base64_list:
         out = []
@@ -530,7 +555,7 @@ def _parse_vision_image_inputs(data):
         if not mime.startswith('image/'):
             mime = f"image/{mime}"
         return [f"data:{mime};base64,{single_b64.strip()}"]
-    # 2) 传 URL，后端拉图（容器能访问外网时用）
+    # 2) 仅 URL 列表
     urls = data.get('image_urls')
     if isinstance(urls, list):
         urls = [u for u in urls if u and str(u).strip().startswith(('http://', 'https://', 'data:image/'))]
@@ -546,10 +571,11 @@ def _parse_vision_image_inputs(data):
 @app.route('/api/vision/describe', methods=['POST'])
 def vision_describe():
     """调用大模型对图片进行描述/判断。
-    请求体（二选一）:
-      - URL：image_url 或 image_urls（后端会拉图，需容器能访问外网）
-      - Base64：image_base64 或 image_base64_list（客户端先拉图再传，适合后端 Network unreachable）
-      - prompt 可选。
+    请求体（任选一种或混合）:
+      - 混合：images 数组，每项为 { "url": "..." } 或 { "base64": "...", "mime": "image/png" } 或直接字符串 URL/data URL，按顺序多图
+      - 仅 URL：image_url 或 image_urls（后端会拉图，需容器能访问外网）
+      - 仅 Base64：image_base64 或 image_base64_list（客户端先拉图再传，适合后端 Network unreachable）
+      - prompt 可选；json_output 可选。
     拉图+智谱可能需 90s+，请将 HTTP 客户端 Timeout 设为至少 120 秒（响应头 X-Recommended-Timeout: 120000）。
     """
     try:
@@ -566,7 +592,8 @@ def vision_describe():
         prompt = (data.get('prompt') or '').strip()
         if not prompt:
             prompt = '请分别描述这几张图片的内容' if len(urls) > 1 else '请描述这张图片的内容'
-        success, result = describe_image(urls, prompt=prompt)
+        json_output = data.get('json_output') is True
+        success, result = describe_image(urls, prompt=prompt, response_format_json=json_output)
         if success:
             return _vision_response({'code': 0, 'message': 'success', 'data': {'content': result}})
         return _vision_response({'code': -1, 'message': str(result)}, 500)

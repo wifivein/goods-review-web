@@ -129,13 +129,15 @@ def describe_image(
     image_url: Union[str, list[str]],
     prompt: str = "请描述这张图片的内容",
     model: str = DEFAULT_MODEL,
+    response_format_json: bool = False,
 ):
     """
     调用 GLM-4V 对一张或多张图片进行理解，返回模型回复文本。
 
-    :param image_url: 图片 URL（字符串）或 URL 列表，需公网可访问
-    :param prompt: 向模型提问的文本；多图时可用如「请分别描述这几张图」等
+    :param image_url: 图片 URL（字符串）或 URL 列表，需公网可访问；或 data:image/...;base64,...
+    :param prompt: 向模型提问的文本；多图时可用如「请分别描述这几张图」等。若 response_format_json=True，建议在 prompt 中写明期望的 JSON 结构。
     :param model: 模型名，默认 glm-4v-flash
+    :param response_format_json: 为 True 时请求智谱按 JSON 输出（response_format.json_object），便于程序解析；结构约束需在 prompt 中说明。
     :return: (success: bool, result: str | dict)
         success 为 True 时 result 为回复文本；为 False 时 result 为错误信息或原始响应
     """
@@ -172,6 +174,8 @@ def describe_image(
         "model": model,
         "messages": [{"role": "user", "content": content}],
     }
+    if response_format_json:
+        data["response_format"] = {"type": "json_object"}
 
     try:
         resp = requests.post(URL, headers=headers, json=data, timeout=60)

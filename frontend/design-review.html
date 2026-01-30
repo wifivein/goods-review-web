@@ -236,6 +236,23 @@
             max-height: 100%;
             object-fit: contain;
         }
+        /* 缩略图气泡显示在右侧，可盖住大图 */
+        .thumbnail-conclusion-popper {
+            z-index: 3000 !important;
+            max-width: 220px;
+        }
+        .thumbnail-reason-hint {
+            font-size: 11px;
+            color: #606266;
+            margin-top: 4px;
+            line-height: 1.3;
+            max-height: 2.6em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+        }
         .design-thumbnail-item {
             position: relative;
         }
@@ -345,6 +362,31 @@
             font-size: 10px;
             font-weight: 600;
             z-index: 10;
+        }
+        .discard-badge {
+            position: absolute;
+            top: 4px;
+            left: 4px;
+            background: #909399;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            z-index: 10;
+        }
+        .discard-reason-text {
+            display: block;
+            font-size: 10px;
+            color: #909399;
+            margin-top: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+        }
+        .thumbnail-original-item {
+            position: relative;
         }
         
         /* 操作按钮区域 */
@@ -465,26 +507,37 @@
                             <div class="gallery-title">
                                 <span>📷</span>
                                 <span>商品原图</span>
+                                <el-button v-if="hasExcludedOriginals(design)" type="primary" link size="small" @click="toggleShowExcludedOriginals(design)">
+                                    {{ design._showExcludedOriginals ? '隐藏所有已排除项' : '显示所有已排除项' }}
+                                </el-button>
                                 <el-button type="primary" link size="small" @click="openAddOriginalDialog(design)">添加原图</el-button>
                             </div>
                             <div class="gallery-main">
                                 <div class="thumbnail-list">
-                                    <div 
-                                        v-for="(url, index) in design.original_images_urls" 
-                                        :key="index"
-                                        class="thumbnail-item"
-                                        :class="{ active: design.currentOriginalIndex === index }"
-                                        @click="design.currentOriginalIndex = index"
+                                    <el-tooltip
+                                        v-for="item in getVisibleOriginalThumbnails(design)"
+                                        :key="item.index"
+                                        :content="getOriginalClassifyReason(design, item.index) || ''"
+                                        placement="right"
+                                        popper-class="thumbnail-conclusion-popper"
+                                        :disabled="!getOriginalClassifyReason(design, item.index)"
                                     >
-                                        <img :src="getImageUrl(url)" :alt="`原图${index + 1}`" referrerpolicy="no-referrer" @error="handleImageError">
-                                        <div class="thumbnail-label">原图 {{ index + 1 }}</div>
-                                    </div>
+                                        <div 
+                                            class="thumbnail-item thumbnail-original-item thumbnail-with-exclude"
+                                            :class="{ active: design.currentOriginalIndex === item.index, 'is-excluded': (design._excludedOriginalIndices || []).includes(item.index) }"
+                                            @click="selectOriginalThumbnail(design, item.index)"
+                                        >
+                                            <button type="button" class="thumbnail-exclude-btn" :title="(design._excludedOriginalIndices || []).includes(item.index) ? '取消排除' : '排除此项，不参与还原度对比'" @click.stop="toggleExcludeOriginal(design, item.index, $event)">{{ (design._excludedOriginalIndices || []).includes(item.index) ? '取消排除' : '排除' }}</button>
+                                            <img :src="getImageUrl(item.url)" :alt="`原图${item.index + 1}`" referrerpolicy="no-referrer" @error="handleImageError">
+                                            <div class="thumbnail-label">原图 {{ item.index + 1 }}</div>
+                                        </div>
+                                    </el-tooltip>
                                 </div>
                                 <div class="large-image-display">
                                     <img 
                                         v-if="design.original_images_urls && design.original_images_urls.length > 0"
-                                        :src="getImageUrl(design.original_images_urls[design.currentOriginalIndex || 0])" 
-                                        :alt="`原图${(design.currentOriginalIndex || 0) + 1}`"
+                                        :src="getImageUrl(design.original_images_urls[design.currentOriginalIndex ?? 0])" 
+                                        :alt="`原图${(design.currentOriginalIndex ?? 0) + 1}`"
                                         referrerpolicy="no-referrer"
                                         @error="handleImageError"
                                     >
@@ -507,32 +560,43 @@
                             </div>
                             <div class="gallery-main">
                                 <div class="thumbnail-list">
-                                    <div 
-                                        v-for="img in getVisibleDesignThumbnails(design)" 
+                                    <el-tooltip
+                                        v-for="img in getVisibleDesignThumbnails(design)"
                                         :key="img.index"
-                                        class="thumbnail-item design-thumbnail-item thumbnail-with-exclude"
-                                        :class="{ active: design.currentDesignIndex === img.index, selected: design.selectedIndex === img.index, approved: design.selected_image_index === img.index, 'is-excluded': (design._excludedIndices || []).includes(img.index) }"
-                                        @click="selectDesignThumbnail(design, img.index)"
+                                        :content="getDesignReason(design, img.index) || ''"
+                                        placement="right"
+                                        popper-class="thumbnail-conclusion-popper"
+                                        :disabled="!getDesignReason(design, img.index)"
                                     >
-                                        <button type="button" class="thumbnail-exclude-btn" :title="(design._excludedIndices || []).includes(img.index) ? '取消排除' : '排除此项，便于对比其余'" @click.stop="toggleExclude(design, img.index, $event)">{{ (design._excludedIndices || []).includes(img.index) ? '取消排除' : '排除' }}</button>
-                                        <div v-if="design.selected_image_index === img.index" class="approved-badge">已采纳</div>
-                                        <div v-else-if="design.ai_recommendation === img.index" class="ai-recommendation">AI</div>
-                                        <img 
-                                            v-if="img.url"
-                                            :src="getImageUrl(img.url)" 
-                                            :alt="img.title"
-                                            referrerpolicy="no-referrer"
-                                            @error="handleImageError"
-                                            @load="onDesignImageLoad(design, img.index, $event)"
+                                        <div 
+                                            class="thumbnail-item design-thumbnail-item thumbnail-with-exclude"
+                                            :class="{ active: design.currentDesignIndex === img.index, selected: design.selectedIndex === img.index, approved: design.selected_image_index === img.index, 'is-excluded': (design._excludedIndices || []).includes(img.index) }"
+                                            @click="selectDesignThumbnail(design, img.index)"
                                         >
-                                        <div v-else style="padding: 20px; text-align: center; color: #909399; font-size: 12px;">
-                                            暂无
+                                            <button type="button" class="thumbnail-exclude-btn" :title="(design._excludedIndices || []).includes(img.index) ? '取消排除' : '排除此项，便于对比其余'" @click.stop="toggleExclude(design, img.index, $event)">{{ (design._excludedIndices || []).includes(img.index) ? '取消排除' : '排除' }}</button>
+                                            <div v-if="design.selected_image_index === img.index" class="approved-badge">已采纳</div>
+                                            <div v-else-if="design.ai_recommendation === img.index" class="ai-recommendation">AI</div>
+                                            <div v-else-if="getDiscardReason(design, img.index)" class="discard-badge">已废弃</div>
+                                            <img 
+                                                v-if="img.url"
+                                                :src="getImageUrl(img.url)" 
+                                                :alt="img.title"
+                                                referrerpolicy="no-referrer"
+                                                @error="handleImageError"
+                                                @load="onDesignImageLoad(design, img.index, $event)"
+                                            >
+                                            <div v-else style="padding: 20px; text-align: center; color: #909399; font-size: 12px;">
+                                                暂无
+                                            </div>
+                                            <div class="thumbnail-label">
+                                                图{{ img.index }}
+                                                <span v-if="getDesignImageDims(design, img.index)" class="dims-text">{{ getDesignImageDims(design, img.index).w }}×{{ getDesignImageDims(design, img.index).h }}</span>
+                                            </div>
+                                            <div v-if="getDesignReason(design, img.index)" class="thumbnail-reason-hint" :title="getDesignReason(design, img.index)">
+                                                {{ getDesignReason(design, img.index) }}
+                                            </div>
                                         </div>
-                                        <div class="thumbnail-label">
-                                            图{{ img.index }}
-                                            <span v-if="getDesignImageDims(design, img.index)" class="dims-text">{{ getDesignImageDims(design, img.index).w }}×{{ getDesignImageDims(design, img.index).h }}</span>
-                                        </div>
-                                    </div>
+                                    </el-tooltip>
                                 </div>
                                 <div class="large-image-wrapper" @mouseenter="design._hoverLarge = true" @mouseleave="design._hoverLarge = false">
                                     <div v-if="design.currentDesignIndex && isPendingStatus(design)" class="large-image-toolbar" :class="{ visible: design._hoverLarge }">
@@ -731,21 +795,26 @@
                                     return !!(item.design_image_1_url || item.design_image_2_url || item.design_image_3_url);
                                 })();
                                 const excluded = Array.isArray(item.excluded_image_indices) ? item.excluded_image_indices : [];
+                                const excludedOriginals = Array.isArray(item.original_excluded_indices) ? item.original_excluded_indices : [];
+                                const urlsLen = Array.isArray(item.original_images_urls) ? item.original_images_urls.length : 0;
                                 const list = this.getDesignImagesList(item);
                                 const visibleIndices = list.map(img => img.index).filter(idx => !excluded.includes(idx));
                                 const defaultDesignIndex = (item.selected_image_index && visibleIndices.includes(item.selected_image_index))
                                     ? item.selected_image_index
                                     : (hasDesignImages && visibleIndices.length ? visibleIndices[0] : null);
+                                const firstNonExcluded = urlsLen ? (Array.from({ length: urlsLen }, (_, i) => i).find(i => !excludedOriginals.includes(i)) ?? 0) : 0;
                                 return {
                                     ...item,
-                                    currentOriginalIndex: 0,
+                                    currentOriginalIndex: firstNonExcluded,
                                     currentDesignIndex: defaultDesignIndex,
                                     selectedIndex: defaultDesignIndex,
                                     approving: false,
                                     failing: false,
                                     _imageDims: {},
                                     _excludedIndices: excluded,
+                                    _excludedOriginalIndices: excludedOriginals,
                                     _showExcluded: false,
+                                    _showExcludedOriginals: false,
                                     _hoverLarge: false
                                 };
                             });
@@ -772,10 +841,35 @@
                     this.loadDesignList();
                 },
                 selectDesignThumbnail(design, index) {
-                    // 切换大图显示
                     design.currentDesignIndex = design.currentDesignIndex === index ? null : index;
-                    // 同时选中（用于提交）
                     design.selectedIndex = index;
+                },
+                // 原图：可见缩略图列表（未开“显示已排除”时只显示未排除的；开启时显示全部，已排除项用 is-excluded 样式）
+                getVisibleOriginalThumbnails(design) {
+                    const urls = design.original_images_urls || [];
+                    const excluded = design._excludedOriginalIndices || [];
+                    const items = urls.map((url, index) => ({ url, index }));
+                    if (design._showExcludedOriginals) return items;
+                    return items.filter(item => !excluded.includes(item.index));
+                },
+                hasExcludedOriginals(design) {
+                    const excluded = design._excludedOriginalIndices || [];
+                    return excluded.length > 0;
+                },
+                toggleShowExcludedOriginals(design) {
+                    design._showExcludedOriginals = !design._showExcludedOriginals;
+                    if (!design._showExcludedOriginals) {
+                        const excluded = design._excludedOriginalIndices || [];
+                        const cur = design.currentOriginalIndex ?? 0;
+                        if (excluded.includes(cur)) {
+                            const urlsLen = (design.original_images_urls || []).length;
+                            const first = Array.from({ length: urlsLen }, (_, i) => i).find(i => !excluded.includes(i));
+                            if (first !== undefined) design.currentOriginalIndex = first;
+                        }
+                    }
+                },
+                selectOriginalThumbnail(design, index) {
+                    design.currentOriginalIndex = index;
                 },
                 // 可见设计图缩略图：未开“显示已排除”时过滤掉已排除项；开启时显示全部
                 getVisibleDesignThumbnails(design) {
@@ -803,6 +897,64 @@
                         console.error('保存排除状态失败:', err);
                         ElMessage.warning('排除状态保存失败，刷新后可能丢失');
                     }
+                },
+                async toggleExcludeOriginal(design, index, e) {
+                    if (e) e.stopPropagation();
+                    if (!design._excludedOriginalIndices) design._excludedOriginalIndices = [];
+                    const arr = design._excludedOriginalIndices;
+                    const next = arr.includes(index) ? arr.filter(i => i !== index) : [...arr, index].sort((a,b)=>a-b);
+                    design._excludedOriginalIndices = next;
+                    const visible = this.getVisibleOriginalThumbnails(design);
+                    if (design.currentOriginalIndex === index && visible.length) {
+                        design.currentOriginalIndex = visible[0].index;
+                    } else if (design.currentOriginalIndex === index && !visible.length) {
+                        design.currentOriginalIndex = (design.original_images_urls || []).length ? 0 : null;
+                    }
+                    try {
+                        await axios.post(`${API_BASE_URL}/design/set-excluded-originals`, {
+                            id: design.id,
+                            excluded_indices: next
+                        });
+                    } catch (err) {
+                        console.error('保存排除状态失败:', err);
+                        ElMessage.warning('排除状态保存失败，刷新后可能丢失');
+                    }
+                },
+                // 取 design_check_results 数组（兼容接口返回字符串）
+                getDesignCheckResultsArray(design) {
+                    let full = design.design_check_results;
+                    if (typeof full === 'string') {
+                        try { full = full.trim() ? JSON.parse(full) : []; } catch (e) { full = []; }
+                    }
+                    return Array.isArray(full) ? full : [];
+                },
+                // 设计图是否被基础检测废弃（一票否决）
+                getDiscardReason(design, index) {
+                    const full = this.getDesignCheckResultsArray(design);
+                    const entry = full.find(r => r && Number(r.index) === Number(index));
+                    if (entry && entry.pass === false && entry.reason) return String(entry.reason).trim();
+                    const reasons = design.design_discard_reasons;
+                    if (!Array.isArray(reasons)) return null;
+                    const e = reasons.find(r => r && Number(r.index) === Number(index));
+                    return e && e.reason ? String(e.reason) : null;
+                },
+                // 设计图基础检测结果（通过或废弃的原因），用于气泡展示
+                getDesignCheckReason(design, index) {
+                    const full = this.getDesignCheckResultsArray(design);
+                    const entry = full.find(r => r && Number(r.index) === Number(index));
+                    if (entry && entry.reason) return String(entry.reason).trim();
+                    return null;
+                },
+                getOriginalClassifyReason(design, index) {
+                    const list = design.original_classify_reasons;
+                    if (!Array.isArray(list)) return null;
+                    const entry = list.find(r => r && Number(r.index) === Number(index));
+                    return entry && entry.reason != null ? String(entry.reason).trim() || null : null;
+                },
+                // 设计图气泡：已采纳显示 ai_reason（第二步综合评估）；否则显示基础检测原因（通过/废弃）
+                getDesignReason(design, index) {
+                    if (design.selected_image_index === index && design.ai_reason) return String(design.ai_reason).trim();
+                    return this.getDesignCheckReason(design, index) || this.getDiscardReason(design, index) || null;
                 },
                 async approveDesign(design) {
                     if (!design.selectedIndex) {
@@ -1022,17 +1174,18 @@
                     return s === 'ai_selected' || s === 'tab_closed' || s === 'generating';
                 },
                 // 设计图列表：优先用新字段 design_images，为空则用老字段 design_image_1/2/3
+                // design_images 支持两种格式：[{url, title}, ...] 或 ['url1', 'url2', ...]
                 getDesignImagesList(design) {
                     let arr = design.design_images;
                     if (typeof arr === 'string') {
                         try { arr = arr ? JSON.parse(arr) : []; } catch (e) { arr = []; }
                     }
                     if (Array.isArray(arr) && arr.length > 0) {
-                        return arr.map((item, i) => ({
-                            url: item.url || '',
-                            title: item.title || `设计图${i + 1}`,
-                            index: i + 1
-                        }));
+                        return arr.map((item, i) => {
+                            const url = (typeof item === 'string' ? item : (item && item.url)) || '';
+                            const title = (item && typeof item === 'object' && item.title) || `设计图${i + 1}`;
+                            return { url, title, index: i + 1 };
+                        });
                     }
                     return [1, 2, 3].map(i => ({
                         url: design[`design_image_${i}_url`] || '',

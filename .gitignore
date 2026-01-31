@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.Python
+.env
+backend/.env
+docker/.env
+.DS_Store
+*.log

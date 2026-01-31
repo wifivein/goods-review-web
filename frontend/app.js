@@ -662,6 +662,17 @@ function initApp() {
                             updatedGoods.image_list = [];
                         }
                     }
+
+                    // 同样处理 carousel_labels，防止后端未解析
+                    if (updatedGoods.carousel_labels) {
+                        try {
+                            updatedGoods.carousel_labels = typeof updatedGoods.carousel_labels === 'string'
+                                ? JSON.parse(updatedGoods.carousel_labels)
+                                : updatedGoods.carousel_labels;
+                        } catch {
+                            updatedGoods.carousel_labels = [];
+                        }
+                    }
                     
                     // 更新列表中的商品数据
                     const index = this.goodsList.findIndex(g => g.id === goodsId);
@@ -697,6 +708,93 @@ function initApp() {
             if (!url || typeof url !== 'string') return url;
             const baseUrl = url.split('?')[0];
             return `${baseUrl}?imageMogr2/thumbnail/${size}x`;
+        },
+        // 归一化 URL 用于匹配（去查询串、尾部斜杠等、忽略协议）
+        normalizeLabelUrl(url) {
+            if (!url || typeof url !== 'string') return '';
+            // 移除协议头(http/https)，移除查询参数，移除尾部斜杠
+            return url.split('?')[0].replace(/^https?:\/\//, '').replace(/\/+$/, '');
+        },
+        // 按「当前这张图的 URL」在 carousel_labels 里找标签（工作流按 original_url 记录，删图/调序后仍对得上）
+        // 增强：优先按 URL 匹配，匹配不到则尝试按索引匹配（后端承诺同序）
+        getImageLabel(goods, index) {
+            const labels = goods && goods.carousel_labels && Array.isArray(goods.carousel_labels) ? goods.carousel_labels : [];
+            const imgList = goods && goods.image_list && Array.isArray(goods.image_list) ? goods.image_list : [];
+            
+            let lab = null;
+            const currentUrl = imgList[index];
+
+            // 1. 尝试 URL 匹配
+            if (currentUrl) {
+                const norm = this.normalizeLabelUrl(currentUrl);
+                lab = labels.find(l => {
+                    // 同时匹配 original_url (优先) 和 image_url (兼容旧数据或本地图)
+                    return this.normalizeLabelUrl(l.original_url) === norm || 
+                           this.normalizeLabelUrl(l.image_url) === norm;
+                });
+            }
+
+            // 2. 尝试索引匹配 (Fallback)
+            if (!lab) {
+                // 情况 A: 标签对象自带 index 字段
+                lab = labels.find(l => l.index === index);
+                
+                // 情况 B: 长度一致，直接按位置取 (Backend 注释说"与 image_list 同序")
+                if (!lab && labels.length === imgList.length) {
+                    lab = labels[index];
+                }
+            }
+            
+            // Debug Log: 如果有标签数据但找不到匹配，打印日志帮助排查
+            if (labels.length > 0 && !lab) {
+                console.log(`[LabelDebug] Mismatch for index ${index}:`);
+                if (currentUrl) {
+                    console.log(`  Current: ${currentUrl} -> ${this.normalizeLabelUrl(currentUrl)}`);
+                }
+                console.log(`  Candidates:`, labels.map(l => {
+                    const u1 = l.original_url;
+                    const u2 = l.image_url;
+                    return `[${l.index}] Orig: ${u1} -> ${this.normalizeLabelUrl(u1)} | Img: ${u2} -> ${this.normalizeLabelUrl(u2)}`;
+                }));
+            }
+
+            if (!lab) return '';
+            const typeMap = { product_display: '主图', spec: '规格', material: '材质', other: '其他' };
+            const t = typeMap[lab.image_type] || lab.image_type || '';
+            const q = lab.quality_ok === true ? '✓' : (lab.quality_ok === false ? '✗' : '');
+            return [t, q].filter(Boolean).join(' ');
+        },
+        getImageLabelTitle(goods, index) {
+            const labels = goods && goods.carousel_labels && Array.isArray(goods.carousel_labels) ? goods.carousel_labels : [];
+            const imgList = goods && goods.image_list && Array.isArray(goods.image_list) ? goods.image_list : [];
+            
+            let lab = null;
+            const currentUrl = imgList[index];
+
+            // 1. 尝试 URL 匹配
+            if (currentUrl) {
+                const norm = this.normalizeLabelUrl(currentUrl);
+                lab = labels.find(l => {
+                    return this.normalizeLabelUrl(l.original_url) === norm || 
+                           this.normalizeLabelUrl(l.image_url) === norm;
+                });
+            }
+
+            // 2. 尝试索引匹配 (Fallback)
+            if (!lab) {
+                lab = labels.find(l => l.index === index);
+                if (!lab && labels.length === imgList.length) {
+                    lab = labels[index];
+                }
+            }
+
+            if (!lab) return '';
+            const parts = [];
+            if (lab.image_type) parts.push('类型: ' + lab.image_type);
+            if (lab.shape && lab.shape !== 'unknown') parts.push('形状: ' + lab.shape);
+            if (lab.design_desc) parts.push('描述: ' + lab.design_desc);
+            if (typeof lab.quality_ok === 'boolean') parts.push('质量: ' + (lab.quality_ok ? '通过' : '不通过'));
+            return parts.join(' | ');
         },
         // 获取原图URL（去掉缩略图参数）
         getOriginalUrl(url) {

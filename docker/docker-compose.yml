@@ -22,8 +22,10 @@ services:
       - COS_REGION=${COS_REGION:-ap-beijing}
       - COS_BUCKET=${COS_BUCKET:-}
       - COS_DOMAIN=${COS_DOMAIN:-}
+      - DESIGN_IMAGES_DIR=${DESIGN_IMAGES_DIR:-/opt/images}
     volumes:
       - ../backend:/app
+      - /opt/images:/opt/images
     restart: unless-stopped
     networks:
       - goods_review_network
@@ -36,6 +38,7 @@ services:
     volumes:
       - ../frontend:/usr/share/nginx/html:ro
       - /opt/product_images:/usr/share/nginx/html/product_images:ro
+      - /opt/images:/opt/images:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
     networks:

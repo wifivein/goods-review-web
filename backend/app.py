@@ -119,6 +119,95 @@ def ensure_sku_dimensions(sku_list):
     return updated_sku_list
 
 
+# ==========================================
+# 统一查询字段定义和处理逻辑
+# ==========================================
+
+# 基础字段（列表页和详情页通用）
+SQL_GOODS_BASE_FIELDS = """
+    id, master_user_id as user_id, product_id as goods_id, 
+    product_name as title, product_name as name, 
+    carousel_pic_urls as image_list,
+    create_time, update_time,
+    is_publish as isupload, process_status as uploadstatus, 
+    review_status,
+    sale_count as soldcount,
+    preprocess_tags,
+    carousel_labels
+"""
+
+# 详情页额外字段
+SQL_GOODS_DETAIL_FIELDS = """
+    , sku_list, sku_specs as spec,
+    origin_product_url as url,
+    group_id, ref_product_template_id, ref_product_size_template_id,
+    extcode, create_by, create_dept_id, malls,
+    product_template, product_size_template, group_data as product_spec_map
+"""
+
+def _process_goods_row(row):
+    """
+    统一处理商品数据行：
+    1. 解析 JSON 字段
+    2. 提取 main_image / cover
+    3. 格式化 create_time_str
+    """
+    if not row:
+        return row
+    
+    # 1. JSON 字段解析
+    # 列表: image_list, preprocess_tags, carousel_labels
+    # 详情: 上述 + sku_list, spec, malls, product_template, product_size_template, product_spec_map
+    json_fields = [
+        'image_list', 'sku_list', 'spec', 'malls', 
+        'product_template', 'product_size_template', 
+        'product_spec_map', 'carousel_labels', 'preprocess_tags'
+    ]
+    
+    for field in json_fields:
+        if field in row:
+            val = row[field]
+            if val:
+                try:
+                    # 如果是字符串则解析，否则保持原样（已经是list/dict）
+                    row[field] = json.loads(val) if isinstance(val, str) else val
+                except:
+                    # 解析失败时的默认值
+                    # 列表类型字段
+                    if field.endswith('_list') or field in ['carousel_labels', 'preprocess_tags', 'image_list']:
+                        row[field] = []
+                    else:
+                        row[field] = {}
+            else:
+                # 空值的默认值
+                if field.endswith('_list') or field in ['carousel_labels', 'preprocess_tags', 'image_list']:
+                    row[field] = []
+                else:
+                    row[field] = {}
+
+    # 2. 图片处理 (main_image, cover)
+    # 依赖 image_list
+    img_list = row.get('image_list')
+    if isinstance(img_list, list) and len(img_list) > 0:
+        row['main_image'] = img_list[0]
+        row['cover'] = img_list[0]
+    else:
+        row['main_image'] = ""
+        row['cover'] = ""
+
+    # 3. 时间处理
+    # 列表页需要 create_time_str
+    if 'create_time' in row:
+        ct = row['create_time']
+        if isinstance(ct, datetime):
+            row['create_time_str'] = ct.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            row['create_time_str'] = str(ct) if ct else ""
+
+    return row
+
+
+
 def save_goods_to_external_api(goods_id):
     """
     将修改后的商品数据回存到新版软件的 API (JSON 格式)
@@ -439,13 +528,7 @@ def get_goods_list():
         # 查询列表
         list_sql = f"""
             SELECT 
-                id, master_user_id as user_id, product_id as goods_id, 
-                product_name as title, product_name as name, 
-                carousel_pic_urls as image_list,
-                create_time as create_time_str, update_time,
-                is_publish as isupload, process_status as uploadstatus, 
-                review_status,
-                sale_count as soldcount
+            {SQL_GOODS_BASE_FIELDS}
             FROM temu_goods_v2 
             {where_clause}
             {order_clause}
@@ -457,26 +540,7 @@ def get_goods_list():
         
         # 处理JSON字段和补全main_image
         for goods in goods_list:
-            # 处理 image_list (carousel_pic_urls)
-            if goods.get('image_list'):
-                try:
-                    img_list = json.loads(goods['image_list']) if isinstance(goods['image_list'], str) else goods['image_list']
-                    goods['image_list'] = img_list
-                    # 补全 main_image (取第一张图)
-                    goods['main_image'] = img_list[0] if img_list and len(img_list) > 0 else ""
-                    goods['cover'] = goods['main_image']
-                except:
-                    goods['image_list'] = []
-                    goods['main_image'] = ""
-                    goods['cover'] = ""
-            else:
-                goods['image_list'] = []
-                goods['main_image'] = ""
-                goods['cover'] = ""
-            
-            # 兼容处理 create_time_str
-            if isinstance(goods.get('create_time_str'), datetime):
-                goods['create_time_str'] = goods['create_time_str'].strftime('%Y-%m-%d %H:%M:%S')
+            _process_goods_row(goods)
         
         cursor.close()
         conn.close()
@@ -617,19 +681,10 @@ def get_goods_detail(goods_id):
         cursor = conn.cursor()
         
         # 使用别名映射到前端习惯的字段名
-        sql = """
+        sql = f"""
             SELECT 
-                id, master_user_id as user_id, product_id as goods_id, 
-                product_name as title, product_name as name, 
-                carousel_pic_urls as image_list,
-                sku_list, sku_specs as spec,
-                create_time, update_time,
-                is_publish as isupload, process_status as uploadstatus,
-                review_status,
-                sale_count as soldcount, origin_product_url as url,
-                group_id, ref_product_template_id, ref_product_size_template_id,
-                extcode, create_by, create_dept_id, malls,
-                product_template, product_size_template, group_data as product_spec_map
+            {SQL_GOODS_BASE_FIELDS}
+            {SQL_GOODS_DETAIL_FIELDS}
             FROM temu_goods_v2 
             WHERE id = %s
         """
@@ -643,20 +698,7 @@ def get_goods_detail(goods_id):
             }), 404
         
         # 处理JSON字段和补全main_image
-        json_fields = ['image_list', 'sku_list', 'spec', 'malls', 
-                      'product_template', 'product_size_template', 'product_spec_map']
-        
-        for field in json_fields:
-            if goods.get(field):
-                try:
-                    goods[field] = json.loads(goods[field]) if isinstance(goods[field], str) else goods[field]
-                except:
-                    goods[field] = [] if field.endswith('_list') or field == 'image_list' else {}
-        
-        # 补全 main_image 和 cover
-        img_list = goods.get('image_list', [])
-        goods['main_image'] = img_list[0] if img_list and len(img_list) > 0 else ""
-        goods['cover'] = goods['main_image']
+        _process_goods_row(goods)
         
         cursor.close()
         conn.close()

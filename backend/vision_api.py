@@ -24,6 +24,10 @@ DEFAULT_MODEL = "glm-4v-flash"
 # 这些域名的图片服务端不拉取，须由客户端拉图后传 base64
 CLIENT_FETCH_HOST_SUFFIXES = ("lovart.ai",)
 
+# 智谱对单图/请求体有大小限制，过大的 data URL 先缩图再传（避免 1210 参数错误）
+VISION_MAX_DATA_URL_BYTES = 4 * 1024 * 1024   # 4MB
+VISION_RESIZE_MAX_PIXEL = 1024
+
 # 服务端拉图时使用的头（仅用于非 Lovart 等直连可达的 URL），模拟浏览器以通过防盗链
 FETCH_HEADERS = {
     "User-Agent": (
@@ -110,6 +114,41 @@ def _fetch_image_as_base64(url: str, timeout: int = 15):
     return False, None, None, last_err or "未知错误"
 
 
+def _shrink_large_data_url(data_url: str) -> str:
+    """
+    若 data URL 过大（超过 VISION_MAX_DATA_URL_BYTES），解码后缩图再编码为 JPEG，避免智谱 1210 参数错误。
+    返回缩小后的 data URL，失败或无需缩小时返回原串。
+    """
+    if not data_url or not data_url.startswith("data:image/") or ";base64," not in data_url:
+        return data_url
+    if len(data_url) <= VISION_MAX_DATA_URL_BYTES:
+        return data_url
+    if not Image:
+        return data_url
+    try:
+        header, b64 = data_url.split(",", 1)
+        raw = base64.b64decode(b64)
+        img = Image.open(io.BytesIO(raw))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        w, h = img.size
+        if w <= VISION_RESIZE_MAX_PIXEL and h <= VISION_RESIZE_MAX_PIXEL:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            new_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{new_b64}"
+        ratio = min(VISION_RESIZE_MAX_PIXEL / w, VISION_RESIZE_MAX_PIXEL / h)
+        nw, nh = int(w * ratio), int(h * ratio)
+        resample = getattr(Image, "Resampling", None) and Image.Resampling.LANCZOS or Image.LANCZOS
+        img = img.resize((nw, nh), resample)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        new_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{new_b64}"
+    except Exception:
+        return data_url
+
+
 def _resolve_image_for_api(raw_url: str):
     """
     解析出传给智谱的「图片内容」：直连可达的 URL 原样返回；Lovart 等须客户端传 base64，服务端不拉取。
@@ -130,6 +169,7 @@ def describe_image(
     prompt: str = "请描述这张图片的内容",
     model: str = DEFAULT_MODEL,
     response_format_json: bool = False,
+    api_key: Union[str, None] = None,
 ):
     """
     调用 GLM-4V 对一张或多张图片进行理解，返回模型回复文本。
@@ -138,10 +178,11 @@ def describe_image(
     :param prompt: 向模型提问的文本；多图时可用如「请分别描述这几张图」等。若 response_format_json=True，建议在 prompt 中写明期望的 JSON 结构。
     :param model: 模型名，默认 glm-4v-flash
     :param response_format_json: 为 True 时请求智谱按 JSON 输出（response_format.json_object），便于程序解析；结构约束需在 prompt 中说明。
+    :param api_key: 可选，传入时优先使用（如从配置表读取）；否则用 get_api_key()。
     :return: (success: bool, result: str | dict)
         success 为 True 时 result 为回复文本；为 False 时 result 为错误信息或原始响应
     """
-    api_key = get_api_key()
+    api_key = (api_key or "").strip() or get_api_key()
     if not api_key:
         return False, "未配置 BIGMODEL_API_KEY，请在环境变量或 .env 中设置"
 
@@ -156,11 +197,13 @@ def describe_image(
             continue
         # 客户端直接传的 data URL 不再拉图，避免容器内 Network unreachable
         if u.startswith("data:image/"):
+            u = _shrink_large_data_url(u)  # 过大时缩图，避免智谱 1210
             content.append({"type": "image_url", "image_url": {"url": u}})
         elif u.startswith(("http://", "https://")):
             resolved, err = _resolve_image_for_api(u)
             if err is not None:
                 return False, f"无法拉取该图片: {err}"
+            resolved = _shrink_large_data_url(resolved)
             content.append({"type": "image_url", "image_url": {"url": resolved}})
 
     if len(content) == 1:

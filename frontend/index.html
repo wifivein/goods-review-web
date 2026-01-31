@@ -381,6 +381,20 @@
             font-size: 11px;
             text-align: center;
         }
+        .all-images-item .image-label {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.6);
+            color: #c8f0a0;
+            padding: 2px 4px;
+            font-size: 10px;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         .third-image-preview img {
             width: 100%;
             height: 100%;
@@ -483,6 +497,25 @@
             font-weight: normal;
             margin-left: 12px;
         }
+        /* 预处理规则标签：10色循环 */
+        .goods-preprocess-tag {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: 6px;
+            font-weight: normal;
+            display: inline-block;
+        }
+        .goods-preprocess-tag.tag-c0 { background: #e1f3d8; color: #67c23a; }
+        .goods-preprocess-tag.tag-c1 { background: #ecf5ff; color: #409eff; }
+        .goods-preprocess-tag.tag-c2 { background: #fdf6ec; color: #e6a23c; }
+        .goods-preprocess-tag.tag-c3 { background: #fef0f0; color: #f56c6c; }
+        .goods-preprocess-tag.tag-c4 { background: #f4e6f7; color: #9c27b0; }
+        .goods-preprocess-tag.tag-c5 { background: #e6f7ff; color: #00bcd4; }
+        .goods-preprocess-tag.tag-c6 { background: #fff7e6; color: #ff9800; }
+        .goods-preprocess-tag.tag-c7 { background: #e8f5e9; color: #4caf50; }
+        .goods-preprocess-tag.tag-c8 { background: #e3f2fd; color: #2196f3; }
+        .goods-preprocess-tag.tag-c9 { background: #fce4ec; color: #e91e63; }
         /* 操作按钮行样式 */
         .action-buttons-row {
             display: flex;
@@ -916,6 +949,7 @@
                             <div class="goods-header-left">
                                 <strong>商品ID: {{ goodsList[0].goods_id }}</strong>
                                 <span class="goods-sales-badge">销量: {{ goodsList[0].soldcount != null && goodsList[0].soldcount !== '' ? goodsList[0].soldcount : '-' }}</span>
+                                <span v-for="(tag, i) in (goodsList[0].preprocess_tags || [])" :key="tag" :class="['goods-preprocess-tag', 'tag-c' + (i % 10)]" :title="'预处理规则: ' + tag">{{ tag }}</span>
                                 <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266;">
                                     <span>{{ goodsList[0].title }}</span>
                                 </div>
@@ -967,6 +1001,7 @@
                                             @click.stop="showImageActionDialog(goodsList[0], index)"
                                         >
                                             <img :src="getThumbnailUrl(img, 100)" @error="handleImageError">
+                                            <div class="image-label" v-if="getImageLabel(goodsList[0], index)" :title="getImageLabelTitle(goodsList[0], index)">{{ getImageLabel(goodsList[0], index) }}</div>
                                             <div class="image-index">第{{ index + 1 }}张</div>
                                         </div>
                                     </div>
@@ -1013,6 +1048,7 @@
                                     <strong>商品ID: {{ goods.goods_id }}</strong>
                                 </el-checkbox>
                                 <span class="goods-sales-badge">销量: {{ goods.soldcount != null && goods.soldcount !== '' ? goods.soldcount : '-' }}</span>
+                                <span v-for="(tag, i) in (goods.preprocess_tags || [])" :key="tag" :class="['goods-preprocess-tag', 'tag-c' + (i % 10)]" :title="'预处理规则: ' + tag">{{ tag }}</span>
                                 <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266;">
                                     <span>{{ goods.title }}</span>
                                 </div>
@@ -1087,6 +1123,7 @@
                                             @click.stop="selectingImageMap[goods.id] ? handleImageSelect(goods, index, $event) : showImageActionDialog(goods, index)"
                                         >
                                             <img :src="getThumbnailUrl(img)" :alt="`图片${index + 1}`" @error="handleImageError">
+                                            <div class="image-label" v-if="getImageLabel(goods, index)" :title="getImageLabelTitle(goods, index)">{{ getImageLabel(goods, index) }}</div>
                                             <div class="image-index">第{{ index + 1 }}张</div>
                                         </div>
                                     </div>
@@ -1164,6 +1201,15 @@
                             @error="handleImageError"
                         >
                         <div style="font-size: 12px; color: #909399; text-align: center; padding: 4px 0;">点击查看大图</div>
+                    </div>
+                    
+                    <!-- 显示完整标签信息 -->
+                    <div style="margin-top: 15px; padding: 10px; background-color: #f5f7fa; border-radius: 4px; text-align: left;" v-if="getImageLabelTitle(currentActionGoods, currentActionImageIndex)">
+                        <div style="font-size: 12px; color: #606266; margin-bottom: 5px; font-weight: bold;">图片标签信息：</div>
+                        <div style="font-size: 12px; color: #303133; line-height: 1.5; white-space: pre-wrap;">{{ getImageLabelTitle(currentActionGoods, currentActionImageIndex).split(' | ').join('\n') }}</div>
+                    </div>
+                    <div style="margin-top: 15px; padding: 10px; background-color: #fdf6ec; border-radius: 4px; color: #e6a23c; font-size: 12px;" v-else>
+                        暂无标签信息
                     </div>
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 10px;">

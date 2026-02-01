@@ -948,6 +948,7 @@
                         <div class="goods-header-row">
                             <div class="goods-header-left">
                                 <strong>商品ID: {{ goodsList[0].goods_id }}</strong>
+                                <el-button type="primary" link size="small" @click="copyProductId(goodsList[0].goods_id)" title="复制商品ID" style="margin-left: 8px;">复制</el-button>
                                 <span class="goods-sales-badge">销量: {{ goodsList[0].soldcount != null && goodsList[0].soldcount !== '' ? goodsList[0].soldcount : '-' }}</span>
                                 <span v-for="(tag, i) in (goodsList[0].preprocess_tags || [])" :key="tag" :class="['goods-preprocess-tag', 'tag-c' + (i % 10)]" :title="'预处理规则: ' + tag">{{ tag }}</span>
                                 <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266;">
@@ -1041,12 +1042,8 @@
                             :style="goods.review_status === 2 ? { 'background-color': '#d3d3d3', 'padding': '20px', 'margin': '-20px -20px 0 -20px' } : {}"
                         >
                             <div class="goods-header-left">
-                                <el-checkbox 
-                                    :model-value="selectedGoods.includes(goods.id)"
-                                    @change="(checked) => handleCheckboxChange(goods.id, checked)"
-                                >
-                                    <strong>商品ID: {{ goods.goods_id }}</strong>
-                                </el-checkbox>
+                                <strong>商品ID: {{ goods.goods_id }}</strong>
+                                <el-button type="primary" link size="small" @click="copyProductId(goods.goods_id)" title="复制商品ID" style="margin-left: 8px;">复制</el-button>
                                 <span class="goods-sales-badge">销量: {{ goods.soldcount != null && goods.soldcount !== '' ? goods.soldcount : '-' }}</span>
                                 <span v-for="(tag, i) in (goods.preprocess_tags || [])" :key="tag" :class="['goods-preprocess-tag', 'tag-c' + (i % 10)]" :title="'预处理规则: ' + tag">{{ tag }}</span>
                                 <div class="goods-title-inline" style="margin-top: 8px; font-size: 14px; color: #606266;">

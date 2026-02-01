@@ -864,6 +864,117 @@ def batch_save_goods():
         }), 500
 
 
+@app.route('/api/goods/update-main-fields', methods=['POST'])
+def update_goods_main_fields():
+    """
+    原子更新商品主要字段（供整理工作流用）。
+    仅做 DB 写入，不包含业务逻辑。回存原系统由 N8N 工作流单独负责。
+    """
+    try:
+        data = request.json
+        api_id = data.get('api_id')
+        if api_id is None:
+            return jsonify({'code': -1, 'message': 'api_id 不能为空'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM temu_goods_v2 WHERE api_id = %s", (api_id,))
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': -1, 'message': f'未找到 api_id={api_id} 的商品'}), 404
+
+        goods_id = row['id']
+        update_fields = []
+        update_params = []
+
+        if 'product_name' in data:
+            update_fields.append('product_name = %s')
+            update_params.append(data['product_name'] or '')
+        if 'carousel_pic_urls' in data:
+            val = data['carousel_pic_urls']
+            update_fields.append('carousel_pic_urls = %s')
+            update_params.append(json.dumps(val, ensure_ascii=False) if isinstance(val, list) else val)
+        if 'sku_list' in data:
+            val = data['sku_list']
+            update_fields.append('sku_list = %s')
+            update_params.append(json.dumps(val, ensure_ascii=False) if isinstance(val, list) else val)
+        if 'preprocess_tags' in data:
+            val = data['preprocess_tags']
+            update_fields.append('preprocess_tags = %s')
+            update_params.append(json.dumps(val, ensure_ascii=False) if isinstance(val, list) else val)
+        if 'carousel_labels' in data:
+            val = data['carousel_labels']
+            update_fields.append('carousel_labels = %s')
+            update_params.append(json.dumps(val, ensure_ascii=False) if isinstance(val, list) else val)
+        if 'process_status' in data:
+            update_fields.append('process_status = %s')
+            update_params.append(data['process_status'])
+
+        if update_fields:
+            update_fields.append('update_time = NOW()')
+            update_params.append(goods_id)
+            cursor.execute(
+                "UPDATE temu_goods_v2 SET " + ", ".join(update_fields) + " WHERE id = %s",
+                update_params
+            )
+            conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {'goods_id': goods_id, 'api_id': api_id}
+        })
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
+@app.route('/api/goods/update-carousel-labels', methods=['POST'])
+def update_goods_carousel_labels():
+    """
+    仅更新商品 carousel_labels（供设计图检查工作流 vision 路径回写）。
+    接收 product_id，仅当该商品在新表且 carousel_labels 为空时更新。
+    老表商品无记录则 0 行，不报错。
+    """
+    try:
+        data = request.json
+        product_id = data.get('product_id')
+        if product_id is None or product_id == '':
+            return jsonify({'code': -1, 'message': 'product_id 不能为空'}), 400
+
+        carousel_labels = data.get('carousel_labels')
+        if not isinstance(carousel_labels, list):
+            return jsonify({'code': -1, 'message': 'carousel_labels 必须为数组'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        labels_json = json.dumps(carousel_labels, ensure_ascii=False)
+        cursor.execute(
+            """
+            UPDATE temu_goods_v2 SET carousel_labels = %s, update_time = NOW()
+            WHERE product_id = %s
+              AND (carousel_labels IS NULL OR carousel_labels = '' OR carousel_labels = '[]')
+            """,
+            (labels_json, product_id)
+        )
+        rowcount = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {'updated': rowcount > 0, 'product_id': product_id}
+        })
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
 @app.route('/api/goods/approve', methods=['POST'])
 def approve_goods():
     """审核通过商品（review_status 从 0 变成 1）。毛毯类替换第 3 张图为标准规格图；不足 3 张则作废。"""

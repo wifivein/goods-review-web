@@ -759,6 +759,7 @@ function initApp() {
             }
 
             if (!lab) return '';
+            if (lab.label_failed) return '打标失败';
             const typeMap = { product_display: '主图', spec: '规格', material: '材质', other: '其他' };
             const t = typeMap[lab.image_type] || lab.image_type || '';
             const q = lab.quality_ok === true ? '✓' : (lab.quality_ok === false ? '✗' : '');
@@ -789,12 +790,59 @@ function initApp() {
             }
 
             if (!lab) return '';
+            if (lab.label_failed) return '打标失败: ' + this.decodeUnicode(lab.design_desc || '未知错误');
             const parts = [];
             if (lab.image_type) parts.push('类型: ' + lab.image_type);
             if (lab.shape && lab.shape !== 'unknown') parts.push('形状: ' + lab.shape);
             if (lab.design_desc) parts.push('描述: ' + lab.design_desc);
             if (typeof lab.quality_ok === 'boolean') parts.push('质量: ' + (lab.quality_ok ? '通过' : '不通过'));
             return parts.join(' | ');
+        },
+        // 解码 Unicode 转义序列（支持多层嵌套，如 \\u7cfb → 系）
+        decodeUnicode(str) {
+            if (!str || typeof str !== 'string') return str;
+            try {
+                let s = str;
+                let prev = '';
+                for (let i = 0; i < 10 && s !== prev; i++) {
+                    prev = s;
+                    // 每层：\\u → \u，再 \uXXXX → 字符
+                    s = s.replace(/\\\\u/g, '\\u');
+                    s = s.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+                }
+                return s;
+            } catch (e) {
+                return str;
+            }
+        },
+        // 复制商品ID到剪贴板
+        copyProductId(productId) {
+            if (!productId) return;
+            const text = String(productId);
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => {
+                    ElMessage.success('已复制商品ID');
+                }).catch(() => {
+                    this.fallbackCopy(text);
+                });
+            } else {
+                this.fallbackCopy(text);
+            }
+        },
+        fallbackCopy(text) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+                document.execCommand('copy');
+                ElMessage.success('已复制商品ID');
+            } catch (e) {
+                ElMessage.error('复制失败');
+            }
+            document.body.removeChild(ta);
         },
         // 获取原图URL（去掉缩略图参数）
         getOriginalUrl(url) {

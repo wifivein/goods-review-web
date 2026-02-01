@@ -1200,13 +1200,16 @@
                         <div style="font-size: 12px; color: #909399; text-align: center; padding: 4px 0;">点击查看大图</div>
                     </div>
                     
-                    <!-- 显示完整标签信息 -->
-                    <div style="margin-top: 15px; padding: 10px; background-color: #f5f7fa; border-radius: 4px; text-align: left;" v-if="getImageLabelTitle(currentActionGoods, currentActionImageIndex)">
-                        <div style="font-size: 12px; color: #606266; margin-bottom: 5px; font-weight: bold;">图片标签信息：</div>
-                        <div style="font-size: 12px; color: #303133; line-height: 1.5; white-space: pre-wrap;">{{ getImageLabelTitle(currentActionGoods, currentActionImageIndex).split(' | ').join('\n') }}</div>
-                    </div>
-                    <div style="margin-top: 15px; padding: 10px; background-color: #fdf6ec; border-radius: 4px; color: #e6a23c; font-size: 12px;" v-else>
-                        暂无标签信息
+                    <!-- 显示完整标签信息 + 记录badcase -->
+                    <div style="margin-top: 15px; display: flex; align-items: flex-start; gap: 12px;">
+                        <div style="flex: 1; padding: 10px; background-color: #f5f7fa; border-radius: 4px; text-align: left;" v-if="getImageLabelTitle(currentActionGoods, currentActionImageIndex)">
+                            <div style="font-size: 12px; color: #606266; margin-bottom: 5px; font-weight: bold;">图片标签信息：</div>
+                            <div style="font-size: 12px; color: #303133; line-height: 1.5; white-space: pre-wrap;">{{ getImageLabelTitle(currentActionGoods, currentActionImageIndex).split(' | ').join('\n') }}</div>
+                        </div>
+                        <div style="flex: 1; padding: 10px; background-color: #fdf6ec; border-radius: 4px; color: #e6a23c; font-size: 12px;" v-else>
+                            暂无标签信息
+                        </div>
+                        <el-button type="warning" size="small" @click="openBadcaseDialog" title="记录标签错误样本，供后期分析和优化">记录badcase</el-button>
                     </div>
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 10px;">
@@ -1245,6 +1248,45 @@
             </div>
             <template #footer>
                 <el-button @click="imageActionDialogVisible = false">取消</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 记录 badcase 弹窗 -->
+        <el-dialog
+            v-model="badcaseDialogVisible"
+            title="记录 badcase"
+            width="440px"
+            :close-on-click-modal="true"
+        >
+            <div v-if="currentActionGoods && currentActionImageIndex !== null">
+                <div style="margin-bottom: 12px;">
+                    <div style="font-size: 12px; color: #606266; margin-bottom: 4px;">图片URL：</div>
+                    <div style="font-size: 11px; color: #909399; word-break: break-all;">{{ (currentActionGoods.image_list || [])[currentActionImageIndex] || '-' }}</div>
+                </div>
+                <div style="margin-bottom: 12px;">
+                    <div style="font-size: 12px; color: #606266; margin-bottom: 4px;">当前标签：</div>
+                    <div style="font-size: 12px; color: #303133; white-space: pre-wrap;">{{ getImageLabelTitle(currentActionGoods, currentActionImageIndex) || '无' }}</div>
+                </div>
+                <el-form :model="badcaseForm" label-width="80px" label-position="top">
+                    <el-form-item label="问题类型">
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="radio" v-model="badcaseForm.feedback_type" value="类型错误" /> 类型错误</label>
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="radio" v-model="badcaseForm.feedback_type" value="描述不准确" /> 描述不准确</label>
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="radio" v-model="badcaseForm.feedback_type" value="打标失败误判" /> 打标失败误判</label>
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="radio" v-model="badcaseForm.feedback_type" value="其他" /> 其他</label>
+                        </div>
+                    </el-form-item>
+                    <el-form-item label="备注说明">
+                        <el-input v-model="badcaseForm.feedback_note" type="textarea" :rows="2" placeholder="补充说明哪里不对（可选）" maxlength="500" show-word-limit />
+                    </el-form-item>
+                    <el-form-item label="建议正确标签">
+                        <el-input v-model="badcaseForm.suggested_correct" type="textarea" :rows="2" placeholder="若知道正确答案可填写，便于后期优化（可选）" maxlength="500" show-word-limit />
+                    </el-form-item>
+                </el-form>
+            </div>
+            <template #footer>
+                <el-button @click="badcaseDialogVisible = false">取消</el-button>
+                <el-button type="primary" :loading="badcaseSubmitting" @click="submitBadcase">提交</el-button>
             </template>
         </el-dialog>
 

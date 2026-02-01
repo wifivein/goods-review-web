@@ -52,6 +52,14 @@ function initApp() {
             imageActionDialogVisible: false,
             currentActionGoods: null,
             currentActionImageIndex: null,
+            // 记录 badcase 弹窗
+            badcaseDialogVisible: false,
+            badcaseSubmitting: false,
+            badcaseForm: {
+                feedback_type: '其他',
+                feedback_note: '',
+                suggested_correct: ''
+            },
             // 全屏原图
             fullscreenImageVisible: false,
             fullscreenImageUrl: '',
@@ -797,6 +805,62 @@ function initApp() {
             if (lab.design_desc) parts.push('描述: ' + lab.design_desc);
             if (typeof lab.quality_ok === 'boolean') parts.push('质量: ' + (lab.quality_ok ? '通过' : '不通过'));
             return parts.join(' | ');
+        },
+        // 获取完整标签对象（供 badcase 记录用）
+        getImageLabelRaw(goods, index) {
+            const labels = goods && goods.carousel_labels && Array.isArray(goods.carousel_labels) ? goods.carousel_labels : [];
+            const imgList = goods && goods.image_list && Array.isArray(goods.image_list) ? goods.image_list : [];
+            const currentUrl = imgList[index];
+            if (currentUrl) {
+                const norm = this.normalizeLabelUrl(currentUrl);
+                let lab = labels.find(l => this.normalizeLabelUrl(l.original_url) === norm || this.normalizeLabelUrl(l.image_url) === norm);
+                if (!lab) lab = labels.find(l => l.index === index);
+                if (!lab && labels.length === imgList.length) lab = labels[index];
+                return lab;
+            }
+            if (labels.length === imgList.length) return labels[index];
+            return null;
+        },
+        // 打开记录 badcase 弹窗
+        openBadcaseDialog() {
+            this.badcaseForm = { feedback_type: '其他', feedback_note: '', suggested_correct: '' };
+            this.badcaseDialogVisible = true;
+        },
+        // 提交记录 badcase
+        async submitBadcase() {
+            const goods = this.currentActionGoods;
+            const idx = this.currentActionImageIndex;
+            if (!goods || idx == null) return;
+            const imgUrl = (goods.image_list || [])[idx] || '';
+            const lab = this.getImageLabelRaw(goods, idx);
+            const productId = goods.goods_id || goods.id || '';
+            if (!imgUrl || !productId) {
+                ElMessage.warning('缺少图片或商品信息');
+                return;
+            }
+            this.badcaseSubmitting = true;
+            try {
+                const res = await axios.post(`${API_BASE_URL}/goods/save-label-badcase`, {
+                    product_id: productId,
+                    image_url: imgUrl,
+                    image_index: idx,
+                    carousel_label: lab,
+                    feedback_type: this.badcaseForm.feedback_type,
+                    feedback_note: this.badcaseForm.feedback_note.trim(),
+                    suggested_correct: this.badcaseForm.suggested_correct.trim()
+                });
+                if (res.data.code === 0) {
+                    ElMessage.success('已记录');
+                    this.badcaseDialogVisible = false;
+                    this.imageActionDialogVisible = false;
+                } else {
+                    ElMessage.error(res.data.message || '记录失败');
+                }
+            } catch (e) {
+                ElMessage.error(e.response?.data?.message || '记录失败');
+            } finally {
+                this.badcaseSubmitting = false;
+            }
         },
         // 解码 Unicode 转义序列（支持多层嵌套，如 \\u7cfb → 系）
         decodeUnicode(str) {

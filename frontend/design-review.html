@@ -894,7 +894,8 @@
                     this.loadDesignList();
                 },
                 selectDesignThumbnail(design, index) {
-                    design.currentDesignIndex = design.currentDesignIndex === index ? null : index;
+                    // 只选中，不取消：点击即选中，不再支持再次点击取消
+                    design.currentDesignIndex = index;
                     design.selectedIndex = index;
                 },
                 // 原图：可见缩略图列表（未开“显示已排除”时只显示未排除的；开启时显示全部，已排除项用 is-excluded 样式）

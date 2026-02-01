@@ -1540,6 +1540,58 @@ def replace_main_image():
         }), 500
 
 
+@app.route('/api/goods/save-label-badcase', methods=['POST'])
+def save_label_badcase():
+    """记录标签 badcase（打标错误样本），供后续分析和优化"""
+    try:
+        data = request.json
+        product_id = data.get('product_id', '')
+        image_url = data.get('image_url', '')
+        image_index = data.get('image_index', 0)
+        carousel_label = data.get('carousel_label')
+        feedback_type = data.get('feedback_type', '其他')
+        feedback_note = data.get('feedback_note', '')
+        suggested_correct = data.get('suggested_correct', '')
+
+        if not product_id or not image_url:
+            return jsonify({'code': -1, 'message': 'product_id 和 image_url 不能为空'}), 400
+
+        feedback_type = str(feedback_type).strip() or '其他'
+        if feedback_type not in ('类型错误', '描述不准确', '打标失败误判', '其他'):
+            feedback_type = '其他'
+        carousel_label_json = json.dumps(carousel_label, ensure_ascii=False) if carousel_label is not None else None
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """INSERT INTO label_badcase (product_id, image_url, image_index, carousel_label, feedback_type, feedback_note, suggested_correct)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    str(product_id)[:64],
+                    str(image_url)[:1024],
+                    int(image_index),
+                    carousel_label_json,
+                    feedback_type[:32],
+                    str(feedback_note)[:2000] if feedback_note else '',
+                    str(suggested_correct)[:2000] if suggested_correct else ''
+                )
+            )
+            conn.commit()
+            bid = cursor.lastrowid
+        except pymysql.err.OperationalError as e:
+            if 'doesn\'t exist' in str(e) or "doesn't exist" in str(e):
+                return jsonify({'code': -1, 'message': '请先执行 sql/add_label_badcase.sql 创建 label_badcase 表'}), 500
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+
+        return jsonify({'code': 0, 'message': '已记录', 'data': {'id': bid}})
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
 # ========== Lovart设计图审核相关API ==========
 
 @app.route('/api/design/save-tab-mapping', methods=['POST'])
@@ -2465,7 +2517,12 @@ def set_design_discard_reasons():
             discard_from_full = [{'index': x['index'], 'reason': x['reason']} for x in normalized_full if x.get('pass') is not True]
             check_json = json.dumps(normalized_full, ensure_ascii=False)
             discard_json = json.dumps(discard_from_full, ensure_ascii=False)
-            discarded_indices = [int(x['index']) for x in discard_from_full if x.get('index') is not None]
+            # 优先使用 newly_discarded_indices：仅合并本次新排除的，不覆盖用户已取消排除的
+            newly_discarded = data.get('newly_discarded_indices')
+            if isinstance(newly_discarded, list) and len(newly_discarded) > 0:
+                to_add = [int(x) for x in newly_discarded if isinstance(x, (int, float)) and int(x) >= 0]
+            else:
+                to_add = [int(x['index']) for x in discard_from_full if x.get('index') is not None]
             design_images_uploaded = data.get('design_images_uploaded')
             uploaded_json = None
             if isinstance(design_images_uploaded, list) and len(design_images_uploaded) > 0:
@@ -2480,7 +2537,7 @@ def set_design_discard_reasons():
             conn = get_db_connection()
             cursor = conn.cursor()
             excluded_json = None
-            if discarded_indices:
+            if to_add:
                 cursor.execute("SELECT excluded_image_indices FROM lovart_design_tab_mapping WHERE id = %s", (mapping_id,))
                 row = cursor.fetchone()
                 current_excluded = []
@@ -2491,7 +2548,7 @@ def set_design_discard_reasons():
                     except Exception:
                         pass
                 current_excluded = [int(x) for x in current_excluded if isinstance(x, (int, float))]
-                merged_excluded = sorted(set(current_excluded) | set(discarded_indices))
+                merged_excluded = sorted(set(current_excluded) | set(to_add))
                 excluded_json = json.dumps(merged_excluded, ensure_ascii=False)
             try:
                 if uploaded_json and excluded_json is not None:

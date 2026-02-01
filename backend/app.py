@@ -2511,7 +2511,9 @@ def set_design_discard_reasons():
                 idx = int(x['index']) if isinstance(x.get('index'), (int, float)) else None
                 if idx is None or idx < 0:
                     continue
-                pass_val = x.get('pass') is True
+                # 兼容 Vision 返回 "pass": "true"（字符串）与布尔 true
+                p = x.get('pass')
+                pass_val = p is True or (isinstance(p, str) and p.strip().lower() == 'true')
                 reason = str(x.get('reason', '')).strip() or ('通过基础检查' if pass_val else '未通过基础检查')
                 normalized_full.append({'index': idx, 'pass': pass_val, 'reason': reason})
             discard_from_full = [{'index': x['index'], 'reason': x['reason']} for x in normalized_full if x.get('pass') is not True]
@@ -2523,6 +2525,9 @@ def set_design_discard_reasons():
                 to_add = [int(x) for x in newly_discarded if isinstance(x, (int, float)) and int(x) >= 0]
             else:
                 to_add = [int(x['index']) for x in discard_from_full if x.get('index') is not None]
+            # 兜底：pass 为 true 的索引不得加入 excluded（防止上游传错）
+            pass_indices = {int(x['index']) for x in normalized_full if x.get('index') is not None and x.get('pass') is True}
+            to_add = [i for i in to_add if i not in pass_indices]
             design_images_uploaded = data.get('design_images_uploaded')
             uploaded_json = None
             if isinstance(design_images_uploaded, list) and len(design_images_uploaded) > 0:

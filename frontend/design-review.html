@@ -521,7 +521,7 @@
                                 <div class="thumbnail-list">
                                     <el-tooltip
                                         v-for="item in getVisibleOriginalThumbnails(design)"
-                                        :key="item.index"
+                                        :key="`${design.id}-orig-${item.index}`"
                                         :content="getOriginalClassifyReason(design, item.index) || ''"
                                         placement="right"
                                         popper-class="thumbnail-conclusion-popper"
@@ -569,7 +569,7 @@
                                 <div class="thumbnail-list">
                                     <el-tooltip
                                         v-for="img in getVisibleDesignThumbnails(design)"
-                                        :key="img.index"
+                                        :key="`${design.id}-${img.index}`"
                                         :content="getDesignReason(design, img.index) || ''"
                                         placement="right"
                                         popper-class="thumbnail-conclusion-popper"

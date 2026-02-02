@@ -15,6 +15,7 @@ services:
       - DB_USER=${DB_USER:-root}
       - DB_PASSWORD=${DB_PASSWORD:-root}
       - DB_NAME=${DB_NAME:-temu_baodan}
+      - OCRPLUS_BASE_URL=${OCRPLUS_BASE_URL:-http://172.17.0.1:5002}
       - SAVE_API_URL=${SAVE_API_URL:-http://temebaodan.all369.cn/api/pc/savegoods}
       - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
       - COS_SECRET_ID=${COS_SECRET_ID:-}

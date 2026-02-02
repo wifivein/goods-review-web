@@ -10,10 +10,19 @@ import requests
 from datetime import datetime
 import os
 import re
+import logging
 from dotenv import load_dotenv
 import copy
 
 load_dotenv()
+
+# 日志：带时间戳，方便服务器上查审核/回存/侵权检测
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)  # 允许跨域
@@ -40,10 +49,124 @@ DEFAULT_AUTH_TOKEN = "13bc0f9d096f277bcce36a25b274b74a0c7c6fe3"
 # 毛毯标准规格图 URL（审核通过时替换第 3 张图）
 BLANKET_SPEC_IMAGE_URL = "https://img.kwcdn.com/product/20195053a14/c2ddafb8-2eee-497c-9c81-c45254e903bf_800x800.png"
 
+# OCRPlus 图片服务（按 URL 查 image_assets 标签）；原图标签唯一来源 image_assets/OCRPlus
+OCRPLUS_BASE_URL = os.getenv('OCRPLUS_BASE_URL', 'http://localhost:5002').rstrip('/')
+
 
 def get_db_connection():
     """获取数据库连接"""
     return pymysql.connect(**DB_CONFIG)
+
+
+# ---------- 图片原始标签：唯一来源 image_assets + OCRPlus，其它业务只消费、不做源 ----------
+# 设计图审核等只通过 OCRPlus 按 URL 拉标签，不依赖 lovart_design_tab_mapping.original_classify_reasons 作为源。
+def _normalize_url(url):
+    if not url or not isinstance(url, str):
+        return ""
+    s = url.strip().split("#")[0].split("?")[0].strip()
+    return s
+
+
+def _url_to_hash(url):
+    import hashlib
+    n = _normalize_url(url)
+    return hashlib.md5(n.encode("utf-8")).hexdigest() if n else ""
+
+
+def _sync_goods_mapping(cursor, product_id, image_url_list):
+    """将 image_goods_mapping 中该商品（原商品ID=product_id）的映射同步为当前轮播图列表。增/删图后调用。"""
+    try:
+        pid = int(product_id)
+    except (TypeError, ValueError):
+        return
+    cursor.execute("DELETE FROM image_goods_mapping WHERE original_goods_id = %s", (pid,))
+    if not image_url_list or not isinstance(image_url_list, list):
+        return
+    rows = []
+    for url in image_url_list:
+        if not url or not isinstance(url, str):
+            continue
+        h = _url_to_hash(url)
+        if h:
+            rows.append((h, pid))
+    if rows:
+        cursor.executemany(
+            "INSERT IGNORE INTO image_goods_mapping (url_hash, original_goods_id) VALUES (%s, %s)",
+            rows,
+        )
+
+
+def _fetch_labels_by_urls(urls, timeout=5):
+    """
+    批量按 URL 向 OCRPlus 查标签。返回 dict: url_hash -> { "url", "labels" }。
+    请求失败或超时返回 None，调用方回退用库内数据。
+    """
+    if not urls or not OCRPLUS_BASE_URL:
+        return None
+    dedup = list(dict.fromkeys(u for u in urls if u))
+    if not dedup:
+        return None
+    try:
+        r = requests.post(
+            f"{OCRPLUS_BASE_URL}/api/image/labels/by-url",
+            json={"urls": dedup},
+            headers={"Content-Type": "application/json"},
+            timeout=timeout,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if data.get("code") != 200:
+            return None
+        # 多 URL 时 data.data 为 dict keyed by url_hash；单 URL 时为单条 { url, labels }
+        raw = data.get("data")
+        if raw is None:
+            return None
+        if isinstance(raw, dict) and "labels" in raw:
+            return {_url_to_hash(raw.get("url", "")): raw}
+        return raw
+    except Exception:
+        return None
+
+
+def _enrich_goods_carousel_labels(goods, labels_map):
+    """用 labels_map (url_hash -> {url, labels}) 补全 goods['carousel_labels']，按 image_list 顺序。"""
+    if not labels_map:
+        return
+    img_list = goods.get("image_list") or []
+    if not img_list:
+        return
+    existing = goods.get("carousel_labels") or []
+    new_labels = []
+    for i, url in enumerate(img_list):
+        h = _url_to_hash(url)
+        lab = (labels_map.get(h) or {}).get("labels")
+        if lab is not None:
+            new_labels.append(lab if isinstance(lab, dict) else (lab if isinstance(lab, list) else []))
+        else:
+            new_labels.append(existing[i] if i < len(existing) else None)
+    goods["carousel_labels"] = new_labels
+
+
+def _enrich_design_original_classify_reasons(item, labels_map):
+    """用 OCRPlus 返回的 labels_map 拼出 original_classify_reasons。唯一依赖 image_assets/OCRPlus，不合并 lovart 表内缓存。"""
+    if not labels_map:
+        return
+    urls = item.get("original_images_urls") or []
+    if not urls:
+        return
+    reasons = []
+    for i, url in enumerate(urls):
+        h = _url_to_hash(url)
+        lab = (labels_map.get(h) or {}).get("labels")
+        if isinstance(lab, dict) and len(lab) > 0:
+            reason = lab.get("design_desc") or lab.get("first_image_reason") or ""
+            referable = lab.get("product_complete") if "product_complete" in lab else True
+            reasons.append({"index": i, "referable": bool(referable), "reason": reason or ""})
+        else:
+            # 无 OCRPlus 结果时仅给默认占位，不读 lovart 表内 original_classify_reasons
+            reasons.append({"index": i, "referable": True, "reason": ""})
+    item["original_classify_reasons"] = reasons
 
 
 def ensure_sku_dimensions(sku_list):
@@ -290,7 +413,7 @@ def save_goods_to_external_api(goods_id):
             'Authorization': os.getenv('AUTH_TOKEN', DEFAULT_AUTH_TOKEN)
         }
         
-        print(f"[DEBUG] 正在回存商品 {goods_id} 到新 API...")
+        log.info("回存商品 goods_id=%s 到外部 API", goods_id)
         response = requests.post(
             SAVE_API_URL,
             json=payload,
@@ -302,17 +425,17 @@ def save_goods_to_external_api(goods_id):
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get('code') == 0:
-                print(f"[SUCCESS] 商品 {goods_id} 回存成功")
+                log.info("回存成功 goods_id=%s", goods_id)
                 return {'success': True, 'data': res_json}
             else:
-                print(f"[ERROR] API 返回错误: {res_json.get('msg')}")
+                log.warning("回存 API 业务错误 goods_id=%s msg=%s", goods_id, res_json.get('msg'))
                 return {'success': False, 'error': res_json.get('msg')}
         else:
-            print(f"[ERROR] HTTP 错误: {response.status_code}")
+            log.warning("回存 HTTP 错误 goods_id=%s status=%s body=%s", goods_id, response.status_code, response.text[:200])
             return {'success': False, 'error': f'HTTP {response.status_code}'}
             
     except Exception as e:
-        print(f"[EXCEPTION] 回存失败: {str(e)}")
+        log.exception("回存失败 goods_id=%s: %s", goods_id, e)
         return {'success': False, 'error': str(e)}
 
 
@@ -425,7 +548,7 @@ def get_first_pending_upload():
                     rank_result = cursor.fetchone()
                     rank = rank_result['cnt'] + 1 if rank_result and rank_result.get('cnt') is not None else 1
                 except Exception as e:
-                    print(f"[ERROR] 计算排名失败: {str(e)}")
+                    log.exception("计算排名失败: %s", e)
                     rank = 1 
             
             cursor.close()
@@ -452,8 +575,8 @@ def get_first_pending_upload():
         import traceback
         error_msg = str(e)
         error_trace = traceback.format_exc()
-        print(f"[ERROR] get_first_pending_upload 失败: {error_msg}")
-        print(f"[ERROR] 错误堆栈:\n{error_trace}")
+        log.error("get_first_pending_upload 失败: %s", error_msg)
+        log.error("错误堆栈: %s", error_trace)
         # 确保关闭数据库连接
         try:
             if 'cursor' in locals():
@@ -541,6 +664,14 @@ def get_goods_list():
         # 处理JSON字段和补全main_image
         for goods in goods_list:
             _process_goods_row(goods)
+        
+        # 优先从 OCRPlus 按 URL 拉标签，失败或空则用库内 carousel_labels
+        all_urls = [u for g in goods_list for u in (g.get("image_list") or [])]
+        if all_urls:
+            labels_map = _fetch_labels_by_urls(all_urls)
+            if labels_map:
+                for g in goods_list:
+                    _enrich_goods_carousel_labels(g, labels_map)
         
         cursor.close()
         conn.close()
@@ -700,6 +831,13 @@ def get_goods_detail(goods_id):
         # 处理JSON字段和补全main_image
         _process_goods_row(goods)
         
+        # 优先从 OCRPlus 按 URL 拉标签，失败或空则用库内 carousel_labels
+        urls = goods.get("image_list") or []
+        if urls:
+            labels_map = _fetch_labels_by_urls(urls)
+            if labels_map:
+                _enrich_goods_carousel_labels(goods, labels_map)
+        
         cursor.close()
         conn.close()
         
@@ -732,7 +870,7 @@ def save_goods():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        sql = "SELECT id, product_name, carousel_pic_urls FROM temu_goods_v2 WHERE id = %s"
+        sql = "SELECT id, product_id, product_name, carousel_pic_urls FROM temu_goods_v2 WHERE id = %s"
         cursor.execute(sql, (goods_id,))
         goods = cursor.fetchone()
         
@@ -755,6 +893,7 @@ def save_goods():
         # 构建更新
         update_fields = []
         update_params = []
+        carousel_updated_list = None  # 若本轮播图有变更，保存新列表用于同步 mapping
         
         # 如果有标题修改
         if 'title' in data:
@@ -774,6 +913,7 @@ def save_goods():
             
             update_fields.append("carousel_pic_urls = %s")
             update_params.append(json.dumps(new_image_list, ensure_ascii=False))
+            carousel_updated_list = new_image_list
         elif 'main_image' in data and current_image_list:
             # 只修改了主图
             new_image_list = list(current_image_list)
@@ -784,6 +924,7 @@ def save_goods():
             
             update_fields.append("carousel_pic_urls = %s")
             update_params.append(json.dumps(new_image_list, ensure_ascii=False))
+            carousel_updated_list = new_image_list
 
         # 新增：如果有 SKU 列表修改
         if 'sku_list' in data:
@@ -796,6 +937,9 @@ def save_goods():
             update_params.append(goods_id)
             cursor.execute(update_sql, update_params)
             conn.commit()
+            if carousel_updated_list is not None:
+                _sync_goods_mapping(cursor, goods.get('product_id'), carousel_updated_list)
+                conn.commit()
         
         cursor.close()
         conn.close()
@@ -904,10 +1048,7 @@ def update_goods_main_fields():
             val = data['preprocess_tags']
             update_fields.append('preprocess_tags = %s')
             update_params.append(json.dumps(val, ensure_ascii=False) if isinstance(val, list) else val)
-        if 'carousel_labels' in data:
-            val = data['carousel_labels']
-            update_fields.append('carousel_labels = %s')
-            update_params.append(json.dumps(val, ensure_ascii=False) if isinstance(val, list) else val)
+        # 图片标签仅存 image_assets，不再更新 temu_goods_v2.carousel_labels；若 body 带 carousel_labels 则忽略
         if 'process_status' in data:
             update_fields.append('process_status = %s')
             update_params.append(data['process_status'])
@@ -936,43 +1077,13 @@ def update_goods_main_fields():
 @app.route('/api/goods/update-carousel-labels', methods=['POST'])
 def update_goods_carousel_labels():
     """
-    仅更新商品 carousel_labels（供设计图检查工作流 vision 路径回写）。
-    接收 product_id，仅当该商品在新表且 carousel_labels 为空时更新。
-    老表商品无记录则 0 行，不报错。
+    已废弃：图片标签仅存 image_assets，请通过 OCRPlus POST /api/image/labels 或 /batch 写入。
+    本接口不再写 temu_goods_v2.carousel_labels，返回 410 便于 n8n 移除调用。
     """
-    try:
-        data = request.json
-        product_id = data.get('product_id')
-        if product_id is None or product_id == '':
-            return jsonify({'code': -1, 'message': 'product_id 不能为空'}), 400
-
-        carousel_labels = data.get('carousel_labels')
-        if not isinstance(carousel_labels, list):
-            return jsonify({'code': -1, 'message': 'carousel_labels 必须为数组'}), 400
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        labels_json = json.dumps(carousel_labels, ensure_ascii=False)
-        cursor.execute(
-            """
-            UPDATE temu_goods_v2 SET carousel_labels = %s, update_time = NOW()
-            WHERE product_id = %s
-              AND (carousel_labels IS NULL OR carousel_labels = '' OR carousel_labels = '[]')
-            """,
-            (labels_json, product_id)
-        )
-        rowcount = cursor.rowcount
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-        return jsonify({
-            'code': 0,
-            'message': 'success',
-            'data': {'updated': rowcount > 0, 'product_id': product_id}
-        })
-    except Exception as e:
-        return jsonify({'code': -1, 'message': str(e)}), 500
+    return jsonify({
+        'code': 410,
+        'message': '接口已废弃。图片标签仅存 image_assets，请通过 OCRPlus 写入；本接口不再更新商品表。'
+    }), 410
 
 
 @app.route('/api/goods/approve', methods=['POST'])
@@ -987,7 +1098,7 @@ def approve_goods():
 
         conn = get_db_connection()
         cursor = conn.cursor()
-        sql = "SELECT id, api_id, product_name, carousel_pic_urls, sku_list FROM temu_goods_v2 WHERE id = %s"
+        sql = "SELECT id, api_id, product_id, product_name, carousel_pic_urls, sku_list FROM temu_goods_v2 WHERE id = %s"
         cursor.execute(sql, (goods_id,))
         goods = cursor.fetchone()
 
@@ -1056,6 +1167,9 @@ def approve_goods():
             update_sql = "UPDATE temu_goods_v2 SET carousel_pic_urls = %s, review_status = 1 WHERE id = %s"
             cursor.execute(update_sql, (new_carousel, goods_id))
         conn.commit()
+        # 替换第3张图后同步 image_goods_mapping（该商品映射为当前轮播图列表）
+        _sync_goods_mapping(cursor, goods.get('product_id'), image_list)
+        conn.commit()
         cursor.close()
         conn.close()
 
@@ -1064,9 +1178,13 @@ def approve_goods():
 
         api_id = goods.get('api_id')
         infringement_ok = False
-        if api_id is not None:
+        log.info("审核通过 goods_id=%s api_id=%s 回存=%s", goods_id, api_id, save_result['success'])
+        if api_id is None:
+            log.warning("审核通过但 api_id 为空，跳过侵权检测 goods_id=%s", goods_id)
+        else:
             try:
                 auth = os.getenv('AUTH_TOKEN', DEFAULT_AUTH_TOKEN)
+                log.info("提交侵权检测 goods_id=%s api_id=%s", goods_id, api_id)
                 r = requests.post(
                     INFRINGEMENT_API_URL,
                     json={'ids': [int(api_id)]},
@@ -1075,10 +1193,16 @@ def approve_goods():
                     proxies={}  # 不走环境代理
                 )
                 infringement_ok = 200 <= r.status_code < 300
+                if infringement_ok:
+                    log.info("侵权检测已提交 goods_id=%s api_id=%s", goods_id, api_id)
+                else:
+                    log.warning("侵权检测返回非 2xx goods_id=%s api_id=%s status=%s body=%s", goods_id, api_id, r.status_code, (r.text or "")[:300])
             except Exception as e:
-                print(f"[WARN] 侵权检测提交失败 api_id={api_id}: {e}")
+                log.warning("侵权检测提交失败 goods_id=%s api_id=%s: %s", goods_id, api_id, e)
         if infringement_ok:
             msg += '，侵权检测已提交'
+        elif api_id is not None:
+            msg += '，侵权检测提交失败'
 
         return jsonify({
             'code': 0,
@@ -1276,16 +1400,16 @@ def remove_image():
         cursor = conn.cursor()
         
         # 获取当前商品
-        sql = "SELECT id, carousel_pic_urls, sku_list FROM temu_goods_v2 WHERE id = %s"
+        sql = "SELECT id, product_id, carousel_pic_urls, sku_list FROM temu_goods_v2 WHERE id = %s"
         cursor.execute(sql, (goods_id,))
         goods = cursor.fetchone()
-        
+
         if not goods:
             return jsonify({
                 'code': -1,
                 'message': '商品不存在'
             }), 404
-        
+
         # 处理 carousel_pic_urls 字段
         image_list = []
         if goods.get('carousel_pic_urls'):
@@ -1293,25 +1417,25 @@ def remove_image():
                 image_list = json.loads(goods['carousel_pic_urls']) if isinstance(goods['carousel_pic_urls'], str) else goods['carousel_pic_urls']
             except:
                 image_list = []
-        
+
         if not isinstance(image_list, list) or len(image_list) == 0:
             return jsonify({
                 'code': -1,
                 'message': '轮播图列表为空'
             }), 400
-        
+
         if image_index < 0 or image_index >= len(image_list):
             return jsonify({
                 'code': -1,
                 'message': '图片索引超出范围'
             }), 400
-        
+
         if len(image_list) <= 1:
             return jsonify({
                 'code': -1,
                 'message': '轮播图只剩一张，无法删除'
             }), 400
-        
+
         # 删除指定索引的图片
         removed_image = image_list.pop(image_index)
         removed_image_base = removed_image.split('?')[0] if removed_image else ''
@@ -1373,7 +1497,10 @@ def remove_image():
         update_sql = "UPDATE temu_goods_v2 SET carousel_pic_urls = %s, sku_list = %s WHERE id = %s"
         cursor.execute(update_sql, (json.dumps(image_list, ensure_ascii=False), json.dumps(sku_list, ensure_ascii=False), goods_id))
         conn.commit()
-        
+        # 删图后同步 image_goods_mapping（该商品映射为当前轮播图列表）
+        _sync_goods_mapping(cursor, goods.get('product_id'), image_list)
+        conn.commit()
+
         cursor.close()
         conn.close()
         
@@ -1972,6 +2099,14 @@ def get_pending_review():
             else:
                 item['design_check_results'] = item.get('design_check_results') if isinstance(item.get('design_check_results'), list) else []
         
+        # 原图标签唯一来源：OCRPlus（读 image_assets），不读 lovart 表内 original_classify_reasons
+        all_urls = [u for it in items for u in (it.get("original_images_urls") or [])]
+        if all_urls:
+            labels_map = _fetch_labels_by_urls(all_urls)
+            if labels_map:
+                for it in items:
+                    _enrich_design_original_classify_reasons(it, labels_map)
+        
         cursor.close()
         conn.close()
         
@@ -2042,6 +2177,74 @@ def debug_design_data():
         return jsonify({'code': -1, 'message': str(e)}), 500
 
 
+@app.route('/api/design/debug-original-labels', methods=['GET'])
+def debug_original_labels():
+    """排查原图标签不显示：看库里和 OCRPlus 里该条目的原图排除/打标数据。GET ?id=<mapping_id>"""
+    try:
+        mapping_id = request.args.get('id')
+        if not mapping_id:
+            return jsonify({'code': -1, 'message': '请传 id，例如 ?id=123'}), 400
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """SELECT id, original_images_urls, original_excluded_indices, original_classify_reasons
+                   FROM lovart_design_tab_mapping WHERE id = %s""",
+                (mapping_id,)
+            )
+        except pymysql.err.OperationalError as e:
+            if 'Unknown column' in str(e):
+                cursor.execute(
+                    """SELECT id, original_images_urls FROM lovart_design_tab_mapping WHERE id = %s""",
+                    (mapping_id,)
+                )
+            else:
+                raise
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if not row:
+            return jsonify({'code': -1, 'message': '未找到该 id 的记录'}), 404
+        urls_raw = row.get('original_images_urls')
+        urls = []
+        if urls_raw:
+            try:
+                urls = json.loads(urls_raw) if isinstance(urls_raw, str) else (urls_raw if isinstance(urls_raw, list) else [])
+            except Exception:
+                pass
+        excluded_raw = row.get('original_excluded_indices')
+        reasons_raw = row.get('original_classify_reasons')
+        if isinstance(excluded_raw, str) and excluded_raw:
+            try:
+                excluded_raw = json.loads(excluded_raw)
+            except Exception:
+                pass
+        if isinstance(reasons_raw, str) and reasons_raw:
+            try:
+                reasons_raw = json.loads(reasons_raw)
+            except Exception:
+                pass
+        ocrplus_result = None
+        if urls:
+            ocrplus_result = _fetch_labels_by_urls(urls)
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {
+                'id': row.get('id'),
+                'original_images_urls_count': len(urls),
+                'db': {
+                    'original_excluded_indices': excluded_raw,
+                    'original_classify_reasons': reasons_raw,
+                },
+                'ocrplus_has_data': bool(ocrplus_result),
+                'ocrplus_keys_count': len(ocrplus_result) if ocrplus_result else 0,
+            }
+        })
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
 @app.route('/api/design/set-excluded', methods=['POST'])
 def set_design_excluded():
     """持久化「排除」的设计图索引（设计图审核页用）"""
@@ -2074,7 +2277,7 @@ def set_design_excluded():
 
 @app.route('/api/design/set-excluded-originals', methods=['POST'])
 def set_excluded_originals():
-    """持久化「排除」的原图下标（与设计图 excluded_image_indices 语义一致）"""
+    """持久化「排除」的原图下标。原图标签唯一存 image_assets/OCRPlus，此处只写 original_excluded_indices。"""
     try:
         data = request.json
         mapping_id = data.get('id')
@@ -2090,32 +2293,12 @@ def set_excluded_originals():
             excluded_indices = []
         excluded_indices = [int(x) for x in excluded_indices if isinstance(x, (int, float)) and int(x) >= 0]
         excluded_json = json.dumps(excluded_indices)
-        # 可选：原图预检结果 [{index, referable, reason}]，供前端悬停显示
-        classify_reasons = data.get('original_classify_reasons')
-        if isinstance(classify_reasons, str) and classify_reasons.strip():
-            try:
-                classify_reasons = json.loads(classify_reasons)
-            except Exception:
-                classify_reasons = None
-        if not isinstance(classify_reasons, list):
-            classify_reasons = []
-        classify_reasons = [x for x in classify_reasons if isinstance(x, dict) and 'index' in x]
-        classify_json = json.dumps(classify_reasons, ensure_ascii=False)
         conn = get_db_connection()
         cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "UPDATE lovart_design_tab_mapping SET original_excluded_indices = %s, original_classify_reasons = %s, updated_at = NOW() WHERE id = %s",
-                (excluded_json, classify_json, mapping_id)
-            )
-        except pymysql.err.OperationalError as e:
-            if 'Unknown column' in str(e) and 'original_classify_reasons' in str(e):
-                cursor.execute(
-                    "UPDATE lovart_design_tab_mapping SET original_excluded_indices = %s, updated_at = NOW() WHERE id = %s",
-                    (excluded_json, mapping_id)
-                )
-            else:
-                raise
+        cursor.execute(
+            "UPDATE lovart_design_tab_mapping SET original_excluded_indices = %s, updated_at = NOW() WHERE id = %s",
+            (excluded_json, mapping_id)
+        )
         rowcount = cursor.rowcount
         conn.commit()
         cursor.close()
@@ -2900,10 +3083,21 @@ def add_original_image():
             return jsonify({'code': -1, 'message': '请至少提供一个有效的 image_url 或 image_urls'}), 400
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            'SELECT id, original_image_url, original_images_urls FROM lovart_design_tab_mapping WHERE id = %s',
-            (mapping_id,)
-        )
+        try:
+            cursor.execute(
+                """SELECT id, original_image_url, original_images_urls,
+                          original_excluded_indices, original_classify_reasons
+                   FROM lovart_design_tab_mapping WHERE id = %s""",
+                (mapping_id,)
+            )
+        except pymysql.err.OperationalError as e:
+            if 'Unknown column' in str(e):
+                cursor.execute(
+                    'SELECT id, original_image_url, original_images_urls FROM lovart_design_tab_mapping WHERE id = %s',
+                    (mapping_id,)
+                )
+            else:
+                raise
         row = cursor.fetchone()
         if not row:
             conn.close()
@@ -2918,12 +3112,41 @@ def add_original_image():
             urls = []
         urls.extend(to_add)
         first_url = row['original_image_url'] or (to_add[0] if to_add else None)
-        cursor.execute(
-            """UPDATE lovart_design_tab_mapping 
-               SET original_image_url = COALESCE(original_image_url, %s), original_images_urls = %s, updated_at = NOW() 
-               WHERE id = %s""",
-            (first_url, json.dumps(urls, ensure_ascii=False), mapping_id)
-        )
+        has_excluded_columns = 'original_excluded_indices' in row
+        if has_excluded_columns:
+            excluded_raw = row.get('original_excluded_indices')
+            # 仅当有非空内容时才写回；空数组 [] 传 None，避免 COALESCE('[]', col) 覆盖掉已有数据
+            if excluded_raw is None or (isinstance(excluded_raw, list) and len(excluded_raw) == 0):
+                excluded_json = None
+            else:
+                excluded_json = (excluded_raw if isinstance(excluded_raw, str) else json.dumps(excluded_raw, ensure_ascii=False))
+            # 原图标签仅存 image_assets，不再更新 original_classify_reasons；只更新 URL 与 excluded_indices
+            try:
+                cursor.execute(
+                    """UPDATE lovart_design_tab_mapping 
+                       SET original_image_url = COALESCE(original_image_url, %s), original_images_urls = %s,
+                           original_excluded_indices = COALESCE(%s, original_excluded_indices),
+                           updated_at = NOW() 
+                       WHERE id = %s""",
+                    (first_url, json.dumps(urls, ensure_ascii=False), excluded_json, mapping_id)
+                )
+            except pymysql.err.OperationalError as e:
+                if 'Unknown column' in str(e) and 'original_excluded_indices' in str(e):
+                    cursor.execute(
+                        """UPDATE lovart_design_tab_mapping 
+                           SET original_image_url = COALESCE(original_image_url, %s), original_images_urls = %s, updated_at = NOW() 
+                           WHERE id = %s""",
+                        (first_url, json.dumps(urls, ensure_ascii=False), mapping_id)
+                    )
+                else:
+                    raise
+        else:
+            cursor.execute(
+                """UPDATE lovart_design_tab_mapping 
+                   SET original_image_url = COALESCE(original_image_url, %s), original_images_urls = %s, updated_at = NOW() 
+                   WHERE id = %s""",
+                (first_url, json.dumps(urls, ensure_ascii=False), mapping_id)
+            )
         conn.commit()
         cursor.close()
         conn.close()

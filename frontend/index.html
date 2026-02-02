@@ -1002,7 +1002,7 @@
                                             @click.stop="showImageActionDialog(goodsList[0], index)"
                                         >
                                             <img :src="getThumbnailUrl(img, 100)" @error="handleImageError">
-                                            <div class="image-label" v-if="getImageLabel(goodsList[0], index)" :title="getImageLabelTitle(goodsList[0], index)">{{ getImageLabel(goodsList[0], index) }}</div>
+                                            <div class="image-label" v-if="getImageLabel(goodsList[0], index)">{{ getImageLabel(goodsList[0], index) }}</div>
                                             <div class="image-index">第{{ index + 1 }}张</div>
                                         </div>
                                     </div>
@@ -1120,7 +1120,7 @@
                                             @click.stop="selectingImageMap[goods.id] ? handleImageSelect(goods, index, $event) : showImageActionDialog(goods, index)"
                                         >
                                             <img :src="getThumbnailUrl(img)" :alt="`图片${index + 1}`" @error="handleImageError">
-                                            <div class="image-label" v-if="getImageLabel(goods, index)" :title="getImageLabelTitle(goods, index)">{{ getImageLabel(goods, index) }}</div>
+                                            <div class="image-label" v-if="getImageLabel(goods, index)">{{ getImageLabel(goods, index) }}</div>
                                             <div class="image-index">第{{ index + 1 }}张</div>
                                         </div>
                                     </div>
@@ -1204,7 +1204,7 @@
                     <div style="margin-top: 15px; display: flex; align-items: flex-start; gap: 12px;">
                         <div style="flex: 1; padding: 10px; background-color: #f5f7fa; border-radius: 4px; text-align: left;" v-if="getImageLabelTitle(currentActionGoods, currentActionImageIndex)">
                             <div style="font-size: 12px; color: #606266; margin-bottom: 5px; font-weight: bold;">图片标签信息：</div>
-                            <div style="font-size: 12px; color: #303133; line-height: 1.5; white-space: pre-wrap;">{{ getImageLabelTitle(currentActionGoods, currentActionImageIndex).split(' | ').join('\n') }}</div>
+                            <div style="font-size: 12px; color: #303133; line-height: 1.5; white-space: pre-wrap;">{{ getImageLabelTitle(currentActionGoods, currentActionImageIndex) }}</div>
                         </div>
                         <div style="flex: 1; padding: 10px; background-color: #fdf6ec; border-radius: 4px; color: #e6a23c; font-size: 12px;" v-else>
                             暂无标签信息

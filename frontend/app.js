@@ -771,40 +771,27 @@ function initApp() {
             const typeMap = { product_display: '主图', spec: '规格', material: '材质', other: '其他' };
             const t = typeMap[lab.image_type] || lab.image_type || '';
             const q = lab.quality_ok === true ? '✓' : (lab.quality_ok === false ? '✗' : '');
-            return [t, q].filter(Boolean).join(' ');
+            const score = lab.first_image_score != null && Number(lab.first_image_score) > 0 ? '首图' + lab.first_image_score : '';
+            return [t, q, score].filter(Boolean).join(' ');
         },
         getImageLabelTitle(goods, index) {
-            const labels = goods && goods.carousel_labels && Array.isArray(goods.carousel_labels) ? goods.carousel_labels : [];
-            const imgList = goods && goods.image_list && Array.isArray(goods.image_list) ? goods.image_list : [];
-            
-            let lab = null;
-            const currentUrl = imgList[index];
-
-            // 1. 尝试 URL 匹配
-            if (currentUrl) {
-                const norm = this.normalizeLabelUrl(currentUrl);
-                lab = labels.find(l => {
-                    return this.normalizeLabelUrl(l.original_url) === norm || 
-                           this.normalizeLabelUrl(l.image_url) === norm;
-                });
-            }
-
-            // 2. 尝试索引匹配 (Fallback)
-            if (!lab) {
-                lab = labels.find(l => l.index === index);
-                if (!lab && labels.length === imgList.length) {
-                    lab = labels[index];
-                }
-            }
-
+            const lab = this.getImageLabelRaw(goods, index);
+            if (!lab) return '';
+            return this.formatLabelFullText(lab);
+        },
+        // 点开图片后显示的完整标签文案（按字段逐行，含首图分数/理由）
+        formatLabelFullText(lab) {
             if (!lab) return '';
             if (lab.label_failed) return '打标失败: ' + this.decodeUnicode(lab.design_desc || '未知错误');
-            const parts = [];
-            if (lab.image_type) parts.push('类型: ' + lab.image_type);
-            if (lab.shape && lab.shape !== 'unknown') parts.push('形状: ' + lab.shape);
-            if (lab.design_desc) parts.push('描述: ' + lab.design_desc);
-            if (typeof lab.quality_ok === 'boolean') parts.push('质量: ' + (lab.quality_ok ? '通过' : '不通过'));
-            return parts.join(' | ');
+            const lines = [];
+            if (lab.image_type) lines.push('类型: ' + lab.image_type);
+            if (lab.product_complete !== undefined) lines.push('完整展示: ' + (lab.product_complete ? '是' : '否'));
+            if (lab.shape && lab.shape !== 'unknown') lines.push('形状: ' + lab.shape);
+            if (lab.design_desc) lines.push('描述: ' + lab.design_desc);
+            if (typeof lab.quality_ok === 'boolean') lines.push('质量: ' + (lab.quality_ok ? '通过' : '不通过'));
+            if (lab.first_image_score != null && Number(lab.first_image_score) >= 0) lines.push('首图分数: ' + lab.first_image_score);
+            if (lab.first_image_reason) lines.push('首图理由: ' + lab.first_image_reason);
+            return lines.join('\n');
         },
         // 获取完整标签对象（供 badcase 记录用）
         getImageLabelRaw(goods, index) {

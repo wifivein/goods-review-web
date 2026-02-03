@@ -771,20 +771,86 @@ def _parse_vision_image_inputs(data):
     return urls
 
 
+def _normalize_single_image_vision_content(content):
+    """单图请求时，若大模型返回的 JSON 里某字段是数组（如一张图被当成多块），规范为单值，避免下游按单对象解析出错。
+    仅当 content 可解析为 JSON 对象且存在数组值时做转换，否则原样返回。
+    """
+    if not isinstance(content, str) or not content.strip():
+        return content
+    raw = content.strip()
+    # 去掉可能的 markdown 代码块
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return content
+    if not isinstance(obj, dict):
+        return content
+    # 已知的布尔字段，空数组时取 False
+    bool_keys = {"product_complete", "quality_ok"}
+    normalized = {}
+    for k, v in obj.items():
+        if isinstance(v, list):
+            if len(v) > 0:
+                normalized[k] = v[0]
+            else:
+                normalized[k] = False if k in bool_keys else ""
+        else:
+            normalized[k] = v
+    return json.dumps(normalized, ensure_ascii=False)
+
+
+def _get_cached_vision_content(urls):
+    """若请求的图片均为 http(s) URL 且在 image_assets 中已有 labels，返回复用内容；否则返回 None。
+    缓存键即请求里的 URL，不另做「用哪个 URL」的判断：传什么就按什么查。
+    """
+    if not urls:
+        return None
+    for u in urls:
+        s = (u or "").strip()
+        if not s.startswith(("http://", "https://")):
+            return None
+    hashes = [_url_to_hash(u) for u in urls]
+    if not all(hashes):
+        return None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        placeholders = ",".join(["%s"] * len(hashes))
+        cursor.execute(
+            f"SELECT url_hash, labels FROM image_assets WHERE url_hash IN ({placeholders}) AND labels IS NOT NULL",
+            hashes,
+        )
+        row_map = {row["url_hash"]: row.get("labels") for row in cursor.fetchall()}
+        conn.close()
+    except Exception:
+        return None
+    # 按请求顺序组装：每个 URL 都必须有标签才复用
+    ordered = []
+    for h in hashes:
+        if h not in row_map or row_map[h] is None:
+            return None
+        lab = row_map[h]
+        ordered.append(lab)
+    # 单图返回单个 content；多图返回 JSON 数组字符串，与常见 n8n 解析方式兼容
+    if len(ordered) == 1:
+        c = ordered[0]
+        return c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
+    return json.dumps(ordered, ensure_ascii=False)
+
+
 @app.route('/api/vision/describe', methods=['POST'])
 def vision_describe():
-    """调用大模型对图片进行描述/判断。
+    """调用大模型对图片进行描述/判断。只接一个图片参数：你传什么 URL（或 base64），就按什么查缓存、拉图、打标。
     请求体（任选一种或混合）:
-      - 混合：images 数组，每项为 { "url": "..." } 或 { "base64": "...", "mime": "image/png" } 或直接字符串 URL/data URL，按顺序多图
-      - 仅 URL：image_url 或 image_urls（后端会拉图，需容器能访问外网）
-      - 仅 Base64：image_base64 或 image_base64_list（客户端先拉图再传，适合后端 Network unreachable）
+      - 混合：images 数组，每项为 { "url": "..." } 或 { "base64": "...", "mime": "image/png" } 或直接字符串 URL/data URL
+      - 仅 URL：image_url 或 image_urls（传外部唯一标识 URL 可命中缓存，传本地/容器 URL 则查不到缓存会调模型）
+      - 仅 Base64：image_base64 或 image_base64_list（无法按 URL 查缓存，会调模型）
       - prompt 可选；json_output 可选。
     拉图+智谱可能需 90s+，请将 HTTP 客户端 Timeout 设为至少 120 秒（响应头 X-Recommended-Timeout: 120000）。
     """
     try:
-        from vision_api import describe_image, get_api_key
-        if not get_api_key():
-            return _vision_response({'code': -1, 'message': '未配置 BIGMODEL_API_KEY'}, 503)
         data = request.json or {}
         urls = _parse_vision_image_inputs(data)
         if not urls:
@@ -792,16 +858,191 @@ def vision_describe():
                 'code': -1,
                 'message': '缺少图片：请传 image_url / image_urls 或 image_base64 / image_base64_list（后端无法访问外网时用 base64）'
             }, 400)
+
+        # 缓存键即请求里的 URL：传什么就按什么查，不另做判断
+        cached = _get_cached_vision_content(urls)
+        if cached is not None:
+            if len(urls) == 1:
+                cached = _normalize_single_image_vision_content(cached)
+            return _vision_response({
+                'code': 0,
+                'message': 'success',
+                'data': {'content': cached, 'cached': True}
+            })
+
+        from vision_api import describe_image, get_api_key
+        if not get_api_key():
+            return _vision_response({'code': -1, 'message': '未配置 BIGMODEL_API_KEY'}, 503)
         prompt = (data.get('prompt') or '').strip()
         if not prompt:
             prompt = '请分别描述这几张图片的内容' if len(urls) > 1 else '请描述这张图片的内容'
         json_output = data.get('json_output') is True
         success, result = describe_image(urls, prompt=prompt, response_format_json=json_output)
         if success:
+            if len(urls) == 1:
+                result = _normalize_single_image_vision_content(result)
             return _vision_response({'code': 0, 'message': 'success', 'data': {'content': result}})
         return _vision_response({'code': -1, 'message': str(result)}, 500)
     except Exception as e:
         return _vision_response({'code': -1, 'message': str(e)}, 500)
+
+
+# 单页「按 URL 查图片现状」用：与 N8N 轮播图打标一致的 5 字段 prompt
+CAROUSEL_LABEL_PROMPT = (
+    '这是一张商品轮播图，请打标签。字段含义：image_type 四选一——product_display=以商品主体或使用场景为主的图（平铺/手持/挂拍/模特展示等）；spec=以尺寸/规格/参数为主的图（尺寸表、规格表、含 cm/inch/尺码/重量/表格/多行数据的图，只要主要内容是规格信息即判 spec）；material=材质特写、细节放大；other=其他。product_complete=商品主体是否完整可见。shape 仅当 image_type 为 product_display 时有效：rectangular/circular/irregular/unknown，否则填 unknown。design_desc=一句话描述。quality_ok=是否清晰可用。拿不准时保守判断。严格只输出 JSON：{"image_type":"","product_complete":false,"shape":"","design_desc":"","quality_ok":false}'
+)
+
+
+@app.route('/api/image-lookup', methods=['GET'])
+def image_lookup():
+    """按原始图片 URL 查现状：是否在 image_assets、是否有本地下载/路径、当前标签、关联商品数。只读，不改数据。"""
+    url = (request.args.get('url') or '').strip()
+    if not url:
+        return jsonify({'code': -1, 'message': '请传 url 参数'}), 400
+    norm_url = _normalize_url(url)
+    url_hash = _url_to_hash(url)
+    if not url_hash:
+        return jsonify({'code': -1, 'message': 'url 无效'}), 400
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute(
+            "SELECT id, url, url_hash, image_path, full_path, labels, label_source FROM image_assets WHERE url_hash = %s",
+            (url_hash,),
+        )
+        row = cursor.fetchone()
+        cursor.execute("SELECT COUNT(*) AS cnt FROM image_goods_mapping WHERE url_hash = %s", (url_hash,))
+        goods_count = (cursor.fetchone() or {}).get('cnt') or 0
+        conn.close()
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+    if not row:
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {
+                'url': norm_url,
+                'url_hash': url_hash,
+                'in_assets': False,
+                'has_local_download': False,
+                'local_path': None,
+                'labels': None,
+                'label_source': None,
+                'goods_count': goods_count,
+            },
+        })
+    has_local = bool((row.get('image_path') or '').strip() or (row.get('full_path') or '').strip())
+    local_path = (row.get('full_path') or row.get('image_path') or '').strip() or None
+    labels = row.get('labels')
+    if isinstance(labels, str) and labels:
+        try:
+            labels = json.loads(labels)
+        except Exception:
+            pass
+    return jsonify({
+        'code': 0,
+        'message': 'success',
+        'data': {
+            'url': row.get('url') or norm_url,
+            'url_hash': url_hash,
+            'in_assets': True,
+            'has_local_download': has_local,
+            'local_path': local_path,
+            'labels': labels,
+            'label_source': (row.get('label_source') or '').strip() or None,
+            'goods_count': goods_count,
+        },
+    })
+
+
+@app.route('/api/image-lookup/retag', methods=['POST'])
+def image_lookup_retag():
+    """对单张图重新打标：调 vision/describe 后写回 OCRPlus，不增删图片、不改关联。"""
+    data = request.json or {}
+    url = (data.get('url') or '').strip()
+    if not url:
+        return jsonify({'code': -1, 'message': '请传 url'}), 400
+    norm_url = _normalize_url(url)
+    url_hash = _url_to_hash(url)
+    if not url_hash:
+        return jsonify({'code': -1, 'message': 'url 无效'}), 400
+    try:
+        from vision_api import describe_image, get_api_key
+        if not get_api_key():
+            return jsonify({'code': -1, 'message': '未配置 BIGMODEL_API_KEY'}), 503
+        success, result = describe_image(
+            [url], prompt=CAROUSEL_LABEL_PROMPT, response_format_json=True
+        )
+        if not success:
+            return jsonify({'code': -1, 'message': str(result)}), 500
+        result = _normalize_single_image_vision_content(result)
+        raw = result.strip()
+        if raw.startswith('```'):
+            raw = raw.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
+        labels = json.loads(raw) if raw else {}
+        if not isinstance(labels, dict):
+            labels = {}
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+    if not OCRPLUS_BASE_URL:
+        return jsonify({'code': -1, 'message': '未配置 OCRPLUS_BASE_URL'}), 503
+    try:
+        r = requests.post(
+            f"{OCRPLUS_BASE_URL}/api/image/labels",
+            json={"url": norm_url, "labels": labels, "label_source": "api"},
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return jsonify({'code': -1, 'message': f'OCRPlus 写标签失败: {r.status_code}'}), 500
+        body = r.json()
+        if body.get('code') != 200:
+            return jsonify({'code': -1, 'message': body.get('msg', 'OCRPlus 返回错误')}), 500
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+    return jsonify({'code': 0, 'message': 'success', 'data': {'url': norm_url, 'url_hash': url_hash, 'labels': labels}})
+
+
+@app.route('/api/image-lookup/sync-goods-mapping', methods=['POST'])
+def image_lookup_sync_goods_mapping():
+    """按商品 ID 用 temu_goods_v2.carousel_pic_urls 同步 image_goods_mapping，修复「关联商品数」为 0 的情况。"""
+    data = request.json or {}
+    try:
+        product_id = int(data.get('product_id') or 0)
+    except (TypeError, ValueError):
+        product_id = 0
+    if not product_id:
+        return jsonify({'code': -1, 'message': '请传 product_id（原商品ID）'}), 400
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute(
+            "SELECT product_id, carousel_pic_urls FROM temu_goods_v2 WHERE product_id = %s",
+            (product_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+    if not row:
+        return jsonify({'code': -1, 'message': f'未找到 product_id={product_id}'}), 404
+    raw = row.get('carousel_pic_urls')
+    image_list = json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
+    if not image_list:
+        return jsonify({'code': 0, 'message': 'success', 'data': {'product_id': product_id, 'synced': 0, 'url_count': 0}})
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        _sync_goods_mapping(cursor, product_id, image_list)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+    return jsonify({
+        'code': 0,
+        'message': 'success',
+        'data': {'product_id': product_id, 'synced': 1, 'url_count': len(image_list)},
+    })
 
 
 @app.route('/api/goods/detail/<int:goods_id>', methods=['GET'])

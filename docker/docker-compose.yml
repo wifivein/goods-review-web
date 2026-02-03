@@ -1,11 +1,70 @@
 version: '3.8'
 
 services:
+  # 图片标签服务（按 URL 查/写 image_assets）；与 backend 同网，用容器名通信
+  ocrplus:
+    build:
+      context: ../../OCRPlus
+      dockerfile: Dockerfile
+    container_name: ocrplus
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+    environment:
+      - DB_HOST=${DB_HOST:-172.17.0.1}
+      - DB_PORT=${DB_PORT:-3307}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-root}
+      - DB_NAME=${DB_NAME:-temu_baodan}
+      - IMAGE_BASE_URL=${IMAGE_BASE_URL:-}
+      - IMAGE_BASE_DIR=${IMAGE_BASE_DIR:-/opt/product_images}
+    volumes:
+      - /opt/product_images:/opt/product_images
+      - /opt/images:/opt/images
+    ports:
+      - "5002:5002"
+    restart: unless-stopped
+    networks:
+      - goods_review_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
   backend:
     build:
       context: ..
       dockerfile: docker/Dockerfile.backend
     container_name: goods_review_backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     # 移除端口映射，统一通过 nginx (8080) 访问
     # ports:
     #   - "5001:5000"
@@ -15,7 +74,8 @@ services:
       - DB_USER=${DB_USER:-root}
       - DB_PASSWORD=${DB_PASSWORD:-root}
       - DB_NAME=${DB_NAME:-temu_baodan}
-      - OCRPLUS_BASE_URL=${OCRPLUS_BASE_URL:-http://172.17.0.1:5002}
+      # 与 ocrplus 同 compose 时用容器名，否则用宿主机地址
+      - OCRPLUS_BASE_URL=${OCRPLUS_BASE_URL:-http://ocrplus:5002}
       - SAVE_API_URL=${SAVE_API_URL:-http://temebaodan.all369.cn/api/pc/savegoods}
       - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
       - COS_SECRET_ID=${COS_SECRET_ID:-}
@@ -30,10 +90,23 @@ services:
     restart: unless-stopped
     networks:
       - goods_review_network
+    depends_on:
+      ocrplus:
+        condition: service_healthy
 
   frontend:
     image: nginx:alpine
     container_name: goods_review_frontend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
     ports:
       - "8080:80"
     volumes:
@@ -45,7 +118,8 @@ services:
     networks:
       - goods_review_network
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 networks:
   goods_review_network:

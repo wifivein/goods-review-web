@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图片按 URL 查现状 - 商品检查系统</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f7fa;
+        }
+        .app-container { min-height: 100vh; padding-top: 70px; }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 16px 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 1000;
+        }
+        .header-content { display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 20px; font-weight: 600; margin: 0; }
+        .header a { color: rgba(255,255,255,0.9); text-decoration: none; font-size: 14px; }
+        .header a:hover { text-decoration: underline; }
+        .main-content { max-width: 900px; margin: 0 auto; padding: 24px; }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+        }
+        .card-title { font-size: 16px; font-weight: 600; color: #303133; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid #ebeef5; }
+        .form-row { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 16px; }
+        .form-row .el-input, .form-row .el-textarea { flex: 1; }
+        .result-section { margin-top: 20px; }
+        .result-row { display: flex; align-items: flex-start; margin-bottom: 12px; font-size: 14px; }
+        .result-label { width: 140px; flex-shrink: 0; color: #909399; }
+        .result-value { flex: 1; word-break: break-all; }
+        .result-value code, .labels-json { font-family: 'Monaco','Menlo',monospace; font-size: 13px; background: #f5f7fa; padding: 8px 12px; border-radius: 4px; display: block; overflow-x: auto; white-space: pre-wrap; }
+        .tag-ok { color: #67c23a; }
+        .tag-no { color: #909399; }
+        .retag-btn { margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <div id="app" class="app-container">
+        <header class="header">
+            <div class="header-content">
+                <h1>图片按 URL 查现状</h1>
+                <a href="index.html">← 返回商品检查</a>
+            </div>
+        </header>
+        <main class="main-content">
+            <div class="card">
+                <div class="card-title">输入原始图片 URL</div>
+                <div class="form-row">
+                    <el-input
+                        v-model="inputUrl"
+                        type="textarea"
+                        :rows="2"
+                        placeholder="粘贴图片 URL，例如 https://img.kwcdn.com/..."
+                        clearable
+                        @keydown.enter.prevent="doLookup"
+                    />
+                </div>
+                <el-button type="primary" :loading="loading" @click="doLookup">查询</el-button>
+            </div>
+
+            <div v-if="result" class="card">
+                <div class="card-title">查询结果（只读，不增删图、不改关联）</div>
+                <div class="result-section">
+                    <div class="result-row">
+                        <span class="result-label">原始 URL</span>
+                        <span class="result-value">{{ result.url || '-' }}</span>
+                    </div>
+                    <div class="result-row">
+                        <span class="result-label">url_hash</span>
+                        <span class="result-value"><code>{{ result.url_hash || '-' }}</code></span>
+                    </div>
+                    <div class="result-row">
+                        <span class="result-label">是否在库</span>
+                        <span class="result-value" :class="result.in_assets ? 'tag-ok' : 'tag-no'">{{ result.in_assets ? '是' : '否' }}</span>
+                    </div>
+                    <div class="result-row">
+                        <span class="result-label">本地已下载</span>
+                        <span class="result-value" :class="result.has_local_download ? 'tag-ok' : 'tag-no'">{{ result.has_local_download ? '是' : '否' }}</span>
+                    </div>
+                    <div class="result-row" v-if="result.local_path">
+                        <span class="result-label">本地路径</span>
+                        <span class="result-value"><code>{{ result.local_path }}</code></span>
+                    </div>
+                    <div class="result-row">
+                        <span class="result-label">关联商品数</span>
+                        <span class="result-value">{{ result.goods_count ?? 0 }}</span>
+                    </div>
+                    <div class="result-row" v-if="result.label_source">
+                        <span class="result-label">标签来源</span>
+                        <span class="result-value">{{ result.label_source }}</span>
+                    </div>
+                    <div class="result-row" v-if="result.labels !== undefined && result.labels !== null">
+                        <span class="result-label">当前标签</span>
+                        <div class="result-value">
+                            <pre class="labels-json">{{ formatLabels(result.labels) }}</pre>
+                        </div>
+                    </div>
+                    <div class="result-row" v-else-if="result.in_assets">
+                        <span class="result-label">当前标签</span>
+                        <span class="result-value tag-no">无</span>
+                    </div>
+                </div>
+                <div class="retag-btn">
+                    <el-button type="warning" :loading="retagLoading" @click="doRetag">一键重新打标</el-button>
+                    <span style="margin-left:12px;color:#909399;font-size:12px;">调用 vision 接口重打标并写回 OCRPlus，不增删图片、不改关联</span>
+                </div>
+                <div class="retag-btn" style="margin-top:12px; padding-top:12px; border-top:1px solid #ebeef5;">
+                    <span style="color:#909399;font-size:12px;">若关联商品数为 0 但该图属于某商品，可填原商品 ID 同步 mapping：</span>
+                    <el-input v-model="syncProductId" placeholder="原商品ID，如 601101544777300" style="width:220px; margin:8px 8px 0 0;" clearable />
+                    <el-button type="primary" plain :loading="syncMappingLoading" @click="doSyncGoodsMapping">同步该商品 mapping</el-button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        window.API_BASE_URL = (function() {
+            const hostname = window.location.hostname;
+            if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:5000/api';
+            return '/api';
+        })();
+    </script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script>
+        const { createApp } = Vue;
+        const { ElMessage } = ElementPlus;
+        const API_BASE_URL = window.API_BASE_URL;
+
+        createApp({
+            data() {
+                return {
+                    inputUrl: '',
+                    loading: false,
+                    retagLoading: false,
+                    syncProductId: '',
+                    syncMappingLoading: false,
+                    result: null,
+                };
+            },
+            methods: {
+                doLookup() {
+                    const url = (this.inputUrl || '').trim();
+                    if (!url) {
+                        ElMessage.warning('请输入图片 URL');
+                        return;
+                    }
+                    this.loading = true;
+                    this.result = null;
+                    axios.get(API_BASE_URL + '/image-lookup', { params: { url } })
+                        .then(res => {
+                            if (res.data && res.data.code === 0 && res.data.data) {
+                                this.result = res.data.data;
+                                ElMessage.success('查询成功');
+                            } else {
+                                ElMessage.error(res.data?.message || '查询失败');
+                            }
+                        })
+                        .catch(err => {
+                            ElMessage.error(err.response?.data?.message || err.message || '请求失败');
+                        })
+                        .finally(() => { this.loading = false; });
+                },
+                formatLabels(labels) {
+                    if (labels == null) return '—';
+                    if (typeof labels === 'string') return labels;
+                    return JSON.stringify(labels, null, 2);
+                },
+                doRetag() {
+                    const url = (this.inputUrl || '').trim();
+                    if (!url) {
+                        ElMessage.warning('请先输入图片 URL');
+                        return;
+                    }
+                    this.retagLoading = true;
+                    axios.post(API_BASE_URL + '/image-lookup/retag', { url })
+                        .then(res => {
+                            if (res.data && res.data.code === 0) {
+                                ElMessage.success('重新打标成功，正在刷新');
+                                this.doLookup();
+                            } else {
+                                ElMessage.error(res.data?.message || '重新打标失败');
+                            }
+                        })
+                        .catch(err => {
+                            ElMessage.error(err.response?.data?.message || err.message || '请求失败');
+                        })
+                        .finally(() => { this.retagLoading = false; });
+                },
+                doSyncGoodsMapping() {
+                    const productId = (this.syncProductId || '').trim();
+                    if (!productId) {
+                        ElMessage.warning('请输入原商品 ID');
+                        return;
+                    }
+                    this.syncMappingLoading = true;
+                    axios.post(API_BASE_URL + '/image-lookup/sync-goods-mapping', { product_id: productId })
+                        .then(res => {
+                            if (res.data && res.data.code === 0) {
+                                ElMessage.success('已同步该商品 mapping，可重新查询 URL 看关联商品数');
+                                if (this.result) this.doLookup();
+                            } else {
+                                ElMessage.error(res.data?.message || '同步失败');
+                            }
+                        })
+                        .catch(err => {
+                            ElMessage.error(err.response?.data?.message || err.message || '请求失败');
+                        })
+                        .finally(() => { this.syncMappingLoading = false; });
+                },
+            },
+        }).use(ElementPlus).mount('#app');
+    </script>
+</body>
+</html>

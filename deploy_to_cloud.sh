@@ -1,16 +1,24 @@
 #!/bin/bash
 # 商品检查和修正系统 - 云服务器一键部署脚本
 # 参考数据库迁移脚本的部署方式
-# 用法: ./deploy_to_cloud.sh [--rebuild]
+# 用法: ./deploy_to_cloud.sh [--rebuild] [--docker-only] [--check]
 #   --rebuild / -r  强制重新构建镜像并重新安装依赖（默认使用缓存，不重复下载依赖）
+#   --docker-only   仅 SSH 到服务器执行 Docker 配置加固（daemon.json + restart + prune），不打包不部署
+#   --check         仅 SSH 到服务器做一次状态检查（容器、健康、磁盘、daemon 配置）并输出结果
 
 set -e  # 遇到错误立即退出
 
 # 是否强制重建（重新下载依赖）
 REBUILD=""
+# 是否仅执行 Docker 配置加固
+DOCKER_ONLY=""
+# 是否仅做服务器状态检查
+CHECK_ONLY=""
 for arg in "$@"; do
     case "$arg" in
         --rebuild|-r) REBUILD="--no-cache"; break ;;
+        --docker-only) DOCKER_ONLY=1; break ;;
+        --check) CHECK_ONLY=1; break ;;
     esac
 done
 
@@ -45,6 +53,45 @@ fi
 echo "✓ 环境检查通过"
 echo ""
 
+# --docker-only: 仅 SSH 执行 Docker 配置加固（daemon + prune）
+if [ -n "$DOCKER_ONLY" ]; then
+    echo "仅执行 Docker 配置加固（daemon.json + restart + prune）..."
+    ssh -i "${SSH_KEY/#\~/$HOME}" ${CLOUD_USER}@${CLOUD_HOST} << 'REMOTE'
+set -e
+echo "Docker 配置加固..."
+if [ -w /etc/docker/daemon.json ] 2>/dev/null || { [ ! -f /etc/docker/daemon.json ] && [ -w /etc/docker ]; }; then
+  python3 << 'PYEND'
+import json
+p = "/etc/docker/daemon.json"
+try:
+    with open(p) as f:
+        d = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    d = {}
+d.update({
+    "log-driver": "json-file",
+    "log-opts": {"max-size": "50m", "max-file": "3"},
+    "live-restore": True
+})
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+PYEND
+  echo "  已写入 /etc/docker/daemon.json"
+  systemctl restart docker
+  sleep 5
+  echo "  Docker 已重启"
+else
+  echo "  跳过 daemon.json（无写权限）"
+fi
+docker image prune -f
+docker builder prune -f
+docker system prune -f
+echo "  清理完成"
+REMOTE
+    echo "✓ Docker 配置加固完成"
+    exit 0
+fi
+
 # 步骤0: 本地 Python 语法检查（避免有语法错误的代码被部署）
 echo "[0/6] 本地代码检查（Python 语法）..."
 FAILED=""
@@ -62,17 +109,26 @@ fi
 echo "✓ 语法检查通过"
 echo ""
 
-# 步骤1: 打包项目
-echo "[1/6] 打包项目..."
+# 步骤1: 打包项目（含 OCRPlus，compose 内用容器名通信）
+echo "[1/6] 打包项目（goods_review_web + OCRPlus）..."
 TAR_FILE="goods_review_web_$(date +%Y%m%d_%H%M%S).tar.gz"
-cd ..
-# 排除本机敏感/本地配置，避免覆盖服务器上的 docker/.env（服务器用脚本默认或已有配置）
+# 从 goods_review_web 的上一级打包，保证服务器上有 /opt/goods_review_web 和 /opt/OCRPlus
+ROOT_DIR="$(cd .. && pwd)"
+cd "$ROOT_DIR"
+# 排除本机敏感/本地配置；OCRPlus 排除 .git、venv、训练数据、大模型、安装包、临时样本
 tar --exclude='.git' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='goods_review_web/backend/.env' \
     --exclude='goods_review_web/docker/.env' \
-    -czf "$TAR_FILE" goods_review_web/
+    --exclude='OCRPlus/easyocr_models' \
+    --exclude='OCRPlus/venv' \
+    --exclude='OCRPlus/training_data' \
+    --exclude='OCRPlus/Miniconda3*' \
+    --exclude='OCRPlus/temp_*' \
+    --exclude='OCRPlus/predictions_*.json' \
+    --exclude='OCRPlus/temp_sample_set.json' \
+    -czf "$TAR_FILE" goods_review_web/ OCRPlus/
 
 if [ $? -ne 0 ]; then
     echo "❌ 打包失败"
@@ -100,14 +156,14 @@ ssh -i "${SSH_KEY/#\~/$HOME}" ${CLOUD_USER}@${CLOUD_HOST} << EOF
 set -e
 
 echo "创建部署目录..."
-mkdir -p ${CLOUD_DIR}
-cd ${CLOUD_DIR}
+mkdir -p /opt
+cd /opt
 
-echo "解压文件..."
-tar -xzf /tmp/$TAR_FILE -C ${CLOUD_DIR} --strip-components=1
+echo "解压文件（得到 goods_review_web 与 OCRPlus）..."
+tar -xzf /tmp/$TAR_FILE
 
-echo "进入docker目录..."
-cd docker
+echo "进入 docker 目录..."
+cd ${CLOUD_DIR}/docker
 
 echo "创建环境变量文件（如果不存在）..."
 if [ ! -f .env ]; then
@@ -125,6 +181,9 @@ AUTH_TOKEN=d6439e3f68072e610aedb646f0589717cb54061d4b336b94fbe73be79886a24d
 
 # 智谱 GLM-4V 图片理解（/api/vision/describe 必填）
 BIGMODEL_API_KEY=
+
+# OCRPlus 在 compose 内用容器名，无需改
+# OCRPLUS_BASE_URL=http://ocrplus:5002
 ENVEOF
     echo "✓ 已创建环境变量文件（请编辑 .env 填写 BIGMODEL_API_KEY 后重启服务）"
 else
@@ -133,7 +192,18 @@ fi
 
 echo "停止旧容器（如果存在）..."
 docker-compose down || true
-docker rm -f goods_review_frontend goods_review_backend 2>/dev/null || true
+docker rm -f goods_review_frontend goods_review_backend ocrplus 2>/dev/null || true
+
+echo "释放宿主机上占用 5002 的进程（如旧 OCRPlus）..."
+for pid in \$(lsof -i :5002 -t 2>/dev/null); do
+  [ -z "\$pid" ] && continue
+  kill -TERM "\$pid" 2>/dev/null && echo "  已向进程 \$pid 发送 SIGTERM" || true
+done
+sleep 2
+for pid in \$(lsof -i :5002 -t 2>/dev/null); do
+  [ -z "\$pid" ] && continue
+  kill -9 "\$pid" 2>/dev/null && echo "  已强制结束进程 \$pid" || true
+done
 
 echo "构建并启动服务..."
 if [ -n "$REBUILD" ]; then
@@ -175,6 +245,38 @@ echo "=========================================="
 echo ""
 echo "📌 访问地址（API 与前端均通过 8080）:"
 echo "   页面与 API: http://${CLOUD_HOST}:8080   (API 路径: /api/...)"
+echo ""
+
+echo "Docker 配置加固（daemon 日志限制 + live-restore + 清理）..."
+if [ -w /etc/docker/daemon.json ] 2>/dev/null || { [ ! -f /etc/docker/daemon.json ] && [ -w /etc/docker ]; }; then
+  python3 << 'PYEND'
+import json
+p = "/etc/docker/daemon.json"
+try:
+    with open(p) as f:
+        d = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    d = {}
+d.update({
+    "log-driver": "json-file",
+    "log-opts": {"max-size": "50m", "max-file": "3"},
+    "live-restore": True
+})
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+PYEND
+  echo "  已写入 /etc/docker/daemon.json"
+  systemctl restart docker
+  sleep 5
+  echo "  Docker 已重启（live-restore 保持容器）"
+else
+  echo "  跳过 daemon.json（无写权限，请 root 手动配置）"
+fi
+docker image prune -f
+docker builder prune -f
+docker system prune -f
+echo "  清理未使用镜像与构建缓存完成"
+
 echo ""
 EOF
 

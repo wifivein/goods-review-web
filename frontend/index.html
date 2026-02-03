@@ -46,6 +46,15 @@
             font-weight: 600;
             margin: 0;
         }
+        .header-link {
+            color: rgba(255, 255, 255, 0.9);
+            text-decoration: none;
+            font-size: 14px;
+            margin-left: 16px;
+        }
+        .header-link:hover {
+            text-decoration: underline;
+        }
         .search-toggle-btn {
             background: rgba(255, 255, 255, 0.2);
             border: 1px solid rgba(255, 255, 255, 0.3);
@@ -849,6 +858,7 @@
             <div class="header-top">
                 <div class="header-title-section">
                     <h1>📦 商品检查和修正系统</h1>
+                    <a href="image-lookup.html" class="header-link" title="按 URL 查图片是否在库、本地路径、标签、关联商品数，支持一键重打标">图片查现状</a>
                     <el-button 
                         class="search-toggle-btn"
                         @click="toggleSearchBar"

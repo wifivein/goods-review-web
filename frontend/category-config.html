@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>品类配置 - 商品检查系统</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus@2.4.4/dist/index.css">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; margin: 0; padding: 20px; }
+        #app { max-width: 1200px; margin: 0 auto; }
+        .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .page-header h1 { margin: 0; font-size: 22px; }
+        .back-link { color: #409eff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+        .keywords-tag { margin-right: 4px; margin-bottom: 2px; }
+        .config-card { background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); padding: 20px; }
+        .data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .data-table th, .data-table td { border: 1px solid #ebeef5; padding: 10px 12px; text-align: left; }
+        .data-table th { background: #f5f7fa; color: #606266; font-weight: 500; }
+        .data-table tr:nth-child(even) { background: #fafafa; }
+        .data-table tr:hover { background: #f0f9ff; }
+        .data-table .col-center { text-align: center; }
+        .data-table .col-actions { white-space: nowrap; }
+        .data-table a.btn-link { margin-right: 8px; cursor: pointer; }
+        .data-table a.btn-link.edit { color: #409eff; }
+        .data-table a.btn-link.del { color: #f56c6c; }
+        .data-table a.btn-link.del.disabled { color: #c0c4cc; cursor: not-allowed; }
+        .loading-tip { padding: 20px; text-align: center; color: #909399; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="page-header">
+            <h1>品类配置</h1>
+            <div>
+                <a href="index.html" class="back-link">← 返回审核</a>
+                <el-button type="primary" @click="openDialog()" style="margin-left: 16px;">新增品类</el-button>
+            </div>
+        </div>
+        <div class="config-card">
+            <p style="color: #606266; font-size: 13px; margin-bottom: 16px;">用于根据 access_logs 的 product_category 关键词匹配品类，工作流与审核共用。命中任一关键词即视为该品类。</p>
+            <div v-if="loading" class="loading-tip">加载中…</div>
+            <table v-else class="data-table">
+                <thead>
+                    <tr>
+                        <th>config_key</th>
+                        <th>展示名</th>
+                        <th>关键词</th>
+                        <th class="col-center">规格图位置</th>
+                        <th>默认规格图URL</th>
+                        <th>模板名</th>
+                        <th class="col-center">模板ID</th>
+                        <th class="col-center">排序</th>
+                        <th class="col-center col-actions">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr v-if="list.length === 0">
+                        <td colspan="9" style="text-align:center;color:#909399;">暂无数据，可点击「新增品类」添加</td>
+                    </tr>
+                    <tr v-for="row in list" :key="row.config_key">
+                        <td>{{ row.config_key }}</td>
+                        <td>{{ row.display_name || '—' }}</td>
+                        <td>
+                            <template v-if="keywordList(row).length === 0">—</template>
+                            <el-tag v-else v-for="(k, i) in keywordList(row)" :key="i" size="small" class="keywords-tag">{{ k }}</el-tag>
+                        </td>
+                        <td class="col-center">第{{ (row.spec_image_index ?? 0) + 1 }}格</td>
+                        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" :title="row.spec_image_url">{{ row.spec_image_url || '—' }}</td>
+                        <td>{{ row.template_name || '—' }}</td>
+                        <td class="col-center">{{ row.ref_product_template_id != null ? row.ref_product_template_id : '—' }}</td>
+                        <td class="col-center">{{ row.sort_order }}</td>
+                        <td class="col-center col-actions">
+                            <a class="btn-link edit" @click="openDialog(row)">编辑</a>
+                            <a class="btn-link del" :class="{ disabled: row.config_key === 'blanket' }" @click="row.config_key !== 'blanket' && doDelete(row)">删除</a>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <el-dialog v-model="dialogVisible" :title="editing ? '编辑品类' : '新增品类'" width="520px" @close="resetForm">
+            <el-form :model="form" label-width="120px">
+                <el-form-item label="config_key" required>
+                    <el-input v-model="form.config_key" placeholder="如 blanket" :disabled="editing" />
+                </el-form-item>
+                <el-form-item label="展示名">
+                    <el-input v-model="form.display_name" placeholder="如 毛毯" />
+                </el-form-item>
+                <el-form-item label="关键词" required>
+                    <el-input type="textarea" v-model="keywordsText" placeholder="每行一个，如 毯子、盖毯、毛毯" :rows="3" />
+                </el-form-item>
+                <el-form-item label="规格图位置">
+                    <el-select v-model="form.spec_image_index" placeholder="选择第几格" style="width:100%;">
+                        <el-option v-for="n in 10" :key="n-1" :label="'第' + n + '格'" :value="n - 1" />
+                    </el-select>
+                </el-form-item>
+                <el-form-item label="默认规格图URL">
+                    <el-input v-model="form.spec_image_url" placeholder="审核通过时替换为该图" />
+                </el-form-item>
+                <el-form-item label="模板名">
+                    <el-input v-model="form.template_name" placeholder="如 毛毯采集模板" />
+                </el-form-item>
+                <el-form-item label="模板ID（采集商品模板管理中的ID）">
+                    <el-input-number v-model="form.ref_product_template_id" :min="0" style="width:100%;" placeholder="ref_product_template_id" />
+                </el-form-item>
+                <el-form-item label="排序">
+                    <el-input-number v-model="form.sort_order" />
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="dialogVisible = false">取消</el-button>
+                <el-button type="primary" @click="submitForm">保存</el-button>
+            </template>
+        </el-dialog>
+    </div>
+    <script>
+        window.API_BASE_URL = (function(){
+            var u = window.location.origin;
+            if (u.indexOf('localhost') >= 0 || u.indexOf('127.0.0.1') >= 0) return u + '/api';
+            return u + '/api';
+        })();
+    </script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://unpkg.com/element-plus@2.4.4/dist/index.full.min.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script>
+        const { createApp } = Vue;
+        const API_BASE = window.API_BASE_URL || '/api';
+        createApp({
+            data() {
+                return {
+                    list: [],
+                    loading: false,
+                    dialogVisible: false,
+                    editing: false,
+                    form: {
+                        config_key: '',
+                        display_name: '',
+                        spec_image_index: 2,
+                        spec_image_url: '',
+                        template_name: '',
+                        ref_product_template_id: null,
+                        sort_order: 0
+                    },
+                    keywordsText: ''
+                };
+            },
+            mounted() { this.load(); },
+            methods: {
+                keywordList(row) {
+                    var kw = row.keywords;
+                    if (Array.isArray(kw)) return kw;
+                    if (typeof kw === 'string') {
+                        try { return JSON.parse(kw) || []; } catch (e) { return kw ? [kw] : []; }
+                    }
+                    return [];
+                },
+                load() {
+                    this.loading = true;
+                    axios.get(API_BASE + '/category-config').then(r => {
+                        if (r.data.code === 0) this.list = r.data.data || [];
+                        this.loading = false;
+                    }).catch(() => { this.loading = false; });
+                },
+                openDialog(row) {
+                    this.editing = !!row;
+                    if (row) {
+                        this.form = {
+                            config_key: row.config_key,
+                            display_name: row.display_name || '',
+                            spec_image_index: row.spec_image_index ?? 2,
+                            spec_image_url: row.spec_image_url || '',
+                            template_name: row.template_name || '',
+                            ref_product_template_id: row.ref_product_template_id,
+                            sort_order: row.sort_order ?? 0
+                        };
+                        this.keywordsText = this.keywordList(row).join('\n');
+                    } else {
+                        this.resetForm();
+                    }
+                    this.dialogVisible = true;
+                },
+                resetForm() {
+                    this.form = {
+                        config_key: '',
+                        display_name: '',
+                        spec_image_index: 2,
+                        spec_image_url: '',
+                        template_name: '',
+                        ref_product_template_id: null,
+                        sort_order: 0
+                    };
+                    this.keywordsText = '';
+                },
+                submitForm() {
+                    var keywords = this.keywordsText.split(/\n/).map(function(s){ return s.trim(); }).filter(Boolean);
+                    if (!this.form.config_key.trim()) {
+                        this.$message.warning('config_key 不能为空');
+                        return;
+                    }
+                    var payload = {
+                        config_key: this.form.config_key.trim(),
+                        display_name: this.form.display_name.trim(),
+                        keywords: keywords,
+                        spec_image_index: this.form.spec_image_index,
+                        spec_image_url: this.form.spec_image_url.trim(),
+                        template_name: this.form.template_name.trim(),
+                        ref_product_template_id: this.form.ref_product_template_id,
+                        sort_order: this.form.sort_order
+                    };
+                    if (this.editing) {
+                        axios.put(API_BASE + '/category-config/' + encodeURIComponent(this.form.config_key), payload).then(r => {
+                            if (r.data.code === 0) {
+                                this.$message.success('已保存');
+                                this.dialogVisible = false;
+                                this.load();
+                            } else this.$message.error(r.data.message || '保存失败');
+                        }).catch(e => this.$message.error(e.message || '请求失败'));
+                    } else {
+                        axios.post(API_BASE + '/category-config', payload).then(r => {
+                            if (r.data.code === 0) {
+                                this.$message.success('已添加');
+                                this.dialogVisible = false;
+                                this.load();
+                            } else this.$message.error(r.data.message || '添加失败');
+                        }).catch(e => this.$message.error(e.message || '请求失败'));
+                    }
+                },
+                doDelete(row) {
+                    if (row.config_key === 'blanket') return;
+                    if (!confirm('确定删除该品类配置？删除后未匹配到的商品会按默认毛毯处理。')) return;
+                    axios.delete(API_BASE + '/category-config/' + encodeURIComponent(row.config_key)).then(r => {
+                        if (r.data.code === 0) {
+                            this.$message.success('已删除');
+                            this.load();
+                        } else this.$message.error(r.data.message || '删除失败');
+                    }).catch(e => this.$message.error(e.message || '请求失败'));
+                }
+            }
+        }).use(ElementPlus).mount('#app');
+    </script>
+</body>
+</html>

@@ -189,6 +189,12 @@ ENVEOF
 else
     echo "✓ 环境变量文件已存在"
 fi
+if [ -f .env ] && ! grep -q 'PREVIEW_LAB_URL' .env 2>/dev/null; then
+  echo "" >> .env
+  echo "# 预审 Lab 反馈（保存/废弃时通知）" >> .env
+  echo "PREVIEW_LAB_URL=http://preview_lab:5003" >> .env
+  echo "  已在 .env 中追加 PREVIEW_LAB_URL=http://preview_lab:5003"
+fi
 
 echo "停止旧容器（如果存在）..."
 docker-compose down || true

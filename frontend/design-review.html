@@ -366,6 +366,30 @@
         .thumbnail-original-item {
             position: relative;
         }
+        /* 设计图侧：显示网格时先蒙层再网格，便于对齐时看清线条 */
+        .design-grid-dim {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+            background: rgba(0, 0, 0, 0.45);
+            z-index: 5;
+        }
+        .design-grid-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px);
+            background-size: 20px 20px;
+            z-index: 6;
+        }
         
         /* 操作按钮区域 */
         .action-buttons {
@@ -564,6 +588,9 @@
                                 </el-button>
                                 <el-button type="primary" link size="small" @click="openAddDesignImageDialog(design)">添加已有设计图</el-button>
                                 <el-button type="warning" link size="small" @click="resetDesignCheck(design)">重置预检结果</el-button>
+                                <el-button type="primary" link size="small" @click="design._showGridOverlay = !design._showGridOverlay">
+                                    {{ design._showGridOverlay ? '隐藏网格线' : '显示网格线' }}
+                                </el-button>
                             </div>
                             <div class="gallery-main">
                                 <div class="thumbnail-list">
@@ -628,6 +655,8 @@
                                         点击左侧缩略图查看大图
                                     </div>
                                 </div>
+                                <div v-show="design._showGridOverlay" class="design-grid-dim" aria-hidden="true"></div>
+                                <div v-show="design._showGridOverlay" class="design-grid-overlay" aria-hidden="true"></div>
                                 <div v-if="design.currentDesignIndex && getDesignImageTitle(design, design.currentDesignIndex)" class="large-image-caption">
                                     {{ getDesignImageTitle(design, design.currentDesignIndex) }}
                                 </div>

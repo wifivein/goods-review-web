@@ -52,14 +52,28 @@ function initApp() {
             imageActionDialogVisible: false,
             currentActionGoods: null,
             currentActionImageIndex: null,
-            // 记录 badcase 弹窗
+            // 负向操作原因历史（从接口拉取，按维度）
+            noteHistoryGoods: [],
+            noteHistoryCarousel: [],
+            // 废弃确认弹窗
+            discardDialogVisible: false,
+            discardSelectedTag: '',
+            discardCustomNote: '',
+            discardGoods: null,
+            discardSubmitting: false,
+            // 删除轮播图确认弹窗
+            removeImageDialogVisible: false,
+            removeImageGoods: null,
+            removeImageIndex: null,
+            removeSelectedTag: '',
+            removeCustomNote: '',
+            removeImageSubmitting: false,
+            // 记录 badcase 弹窗（简化为：原因标签+手填 + 补充说明）
             badcaseDialogVisible: false,
             badcaseSubmitting: false,
-            badcaseForm: {
-                feedback_type: '其他',
-                feedback_note: '',
-                suggested_correct: ''
-            },
+            badcaseSelectedTag: '',
+            badcaseCustomNote: '',
+            badcaseExtra: '',
             // 全屏原图
             fullscreenImageVisible: false,
             fullscreenImageUrl: '',
@@ -264,6 +278,23 @@ function initApp() {
             this.currentActionImageIndex = imageIndex;
             this.imageActionDialogVisible = true;
         },
+        // 负向操作原因历史：从接口拉取（dim: 'goods' | 'carousel'）
+        async loadReasonHistory(dim) {
+            try {
+                const res = await axios.get(`${API_BASE_URL}/goods/reason-history`, { params: { dimension: dim, limit: 20 } });
+                if (res.data.code === 0 && Array.isArray(res.data.data?.items)) {
+                    const arr = res.data.data.items;
+                    if (dim === 'goods') this.noteHistoryGoods = arr;
+                    else this.noteHistoryCarousel = arr;
+                } else {
+                    if (dim === 'goods') this.noteHistoryGoods = [];
+                    else this.noteHistoryCarousel = [];
+                }
+            } catch (e) {
+                if (dim === 'goods') this.noteHistoryGoods = [];
+                else this.noteHistoryCarousel = [];
+            }
+        },
         // 从弹窗中选择操作
         async handleActionFromDialog(action) {
             const goods = this.currentActionGoods;
@@ -299,14 +330,15 @@ function initApp() {
                 // 审核通过
                 await this.handleApprove(goods);
             } else if (action === 'replace-third') {
-                // 更换第3张图
-                if (imageIndex === 2) {
-                    ElMessage.warning('选中的图片已经是第3张');
+                // 更换规格图（按品类可能不是第3张）
+                const specIdx = goods.spec_image_index ?? 2;
+                if (imageIndex === specIdx) {
+                    ElMessage.warning('选中的图片已经是规格图');
                     return;
                 }
                 
-                if (!goods.image_list || goods.image_list.length < 3) {
-                    ElMessage.warning('该商品轮播图不足3张，无法更换');
+                if (!goods.image_list || goods.image_list.length <= specIdx) {
+                    ElMessage.warning('该商品轮播图不足，无法更换规格图');
                     return;
                 }
                 
@@ -314,58 +346,36 @@ function initApp() {
                     const response = await axios.post(`${API_BASE_URL}/goods/swap-image`, {
                         id: goods.id,
                         source_index: imageIndex,
-                        target_index: 2
+                        target_index: specIdx
                     });
                     
                     if (response.data.code === 0) {
-                        ElMessage.success('第3张图已更换');
+                        ElMessage.success('规格图已更换');
                         await this.refreshGoodsItem(goods.id);
                     } else {
                         ElMessage.error(response.data.message || '操作失败');
                     }
                 } catch (error) {
-                    console.error('更换第3张图失败:', error);
+                    console.error('更换规格图失败:', error);
                     ElMessage.error('操作失败: ' + (error.message || '网络错误'));
                 }
             } else if (action === 'remove') {
-                // 删除轮播图
                 if (!goods.image_list || goods.image_list.length <= 1) {
                     ElMessage.warning('轮播图只剩一张，无法删除');
                     return;
                 }
-                
-                // 二次确认
-                try {
-                    await ElMessageBox.confirm(
-                        `确定要删除第${imageIndex + 1}张图片吗？`,
-                        '删除确认',
-                        {
-                            confirmButtonText: '确定',
-                            cancelButtonText: '取消',
-                            type: 'warning'
-                        }
-                    );
-                    
-                    const response = await axios.post(`${API_BASE_URL}/goods/remove-image`, {
-                        id: goods.id,
-                        image_index: imageIndex
-                    });
-                    
-                    if (response.data.code === 0) {
-                        ElMessage.success('图片已删除');
-                        await this.refreshGoodsItem(goods.id);
-                    } else {
-                        ElMessage.error(response.data.message || '操作失败');
-                    }
-                } catch (error) {
-                    if (error !== 'cancel') {
-                        console.error('删除图片失败:', error);
-                        ElMessage.error('操作失败: ' + (error.message || '网络错误'));
-                    }
-                }
+                this.removeImageGoods = goods;
+                this.removeImageIndex = imageIndex;
+                this.removeSelectedTag = '';
+                this.removeCustomNote = '';
+                this.removeImageDialogVisible = true;
+                this.loadReasonHistory('carousel');
             } else if (action === 'discard') {
-                // 废弃商品
-                await this.handleDiscard(goods);
+                this.discardGoods = goods;
+                this.discardSelectedTag = '';
+                this.discardCustomNote = '';
+                this.discardDialogVisible = true;
+                this.loadReasonHistory('goods');
             }
             
             // 清空临时数据
@@ -421,7 +431,74 @@ function initApp() {
                 // 用户取消
             }
         },
-        // 废弃商品
+        // 废弃商品（从弹窗确认后调用）
+        async confirmDiscard() {
+            const goods = this.discardGoods;
+            if (!goods) return;
+            const note = (this.discardCustomNote || '').trim() || this.discardSelectedTag || '';
+            this.discardSubmitting = true;
+            try {
+                const response = await axios.post(`${API_BASE_URL}/goods/discard`, {
+                    id: goods.id,
+                    note: note || undefined
+                });
+                if (response.data.code === 0) {
+                    ElMessage.success('商品已标记为废弃');
+                    this.discardDialogVisible = false;
+                    this.discardGoods = null;
+                    this.discardSelectedTag = '';
+                    this.discardCustomNote = '';
+                    if (this.isMobile) {
+                        await this.loadGoodsList();
+                    } else {
+                        await this.refreshGoodsItem(goods.id);
+                    }
+                    this.loadStatistics();
+                } else {
+                    ElMessage.error(response.data.message || '操作失败');
+                }
+            } catch (error) {
+                console.error('废弃商品失败:', error);
+                ElMessage.error('操作失败: ' + (error.message || '网络错误'));
+            } finally {
+                this.discardSubmitting = false;
+            }
+        },
+        // 删除轮播图（从弹窗确认后调用）
+        async confirmRemoveImage() {
+            const goods = this.removeImageGoods;
+            const idx = this.removeImageIndex;
+            if (!goods || idx == null) return;
+            const note = (this.removeCustomNote || '').trim() || this.removeSelectedTag || '';
+            this.removeImageSubmitting = true;
+            try {
+                const response = await axios.post(`${API_BASE_URL}/goods/remove-image`, {
+                    id: goods.id,
+                    image_index: idx,
+                    note: note || undefined
+                });
+                if (response.data.code === 0) {
+                    ElMessage.success('图片已删除');
+                    this.removeImageDialogVisible = false;
+                    this.removeImageGoods = null;
+                    this.removeImageIndex = null;
+                    this.removeSelectedTag = '';
+                    this.removeCustomNote = '';
+                    this.imageActionDialogVisible = false;
+                    this.currentActionGoods = null;
+                    this.currentActionImageIndex = null;
+                    await this.refreshGoodsItem(goods.id);
+                } else {
+                    ElMessage.error(response.data.message || '操作失败');
+                }
+            } catch (error) {
+                console.error('删除图片失败:', error);
+                ElMessage.error('操作失败: ' + (error.message || '网络错误'));
+            } finally {
+                this.removeImageSubmitting = false;
+            }
+        },
+        // 废弃商品（列表/卡片上直接点「废弃」时用简单确认；若从图片操作弹窗点废弃则走 discardDialog）
         async handleDiscard(goods) {
             try {
                 await ElMessageBox.confirm(
@@ -433,20 +510,16 @@ function initApp() {
                         type: 'warning'
                     }
                 );
-                
                 const response = await axios.post(`${API_BASE_URL}/goods/discard`, {
                     id: goods.id
                 });
-                
                 if (response.data.code === 0) {
                     ElMessage.success('商品已标记为废弃');
-                    // 移动端：直接加载下一条；PC端：刷新当前项
                     if (this.isMobile) {
                         await this.loadGoodsList();
                     } else {
                         await this.refreshGoodsItem(goods.id);
                     }
-                    // 立即刷新统计数据
                     this.loadStatistics();
                 } else {
                     ElMessage.error(response.data.message || '操作失败');
@@ -490,7 +563,7 @@ function initApp() {
                 return;
             }
             
-            ElMessage.info('请在轮播图中点选出一张作为第3张图');
+            ElMessage.info('请在轮播图中点选出一张作为规格图');
             this.selectingImageMap = {
                 ...this.selectingImageMap,
                 [goods.id]: 'third'
@@ -548,9 +621,10 @@ function initApp() {
             }
             
             if (selectingMode === 'third') {
-                // 更换第3张图
-                if (index === 2) {
-                    ElMessage.warning('选中的图片已经是第3张');
+                // 更换规格图
+                const specIdx = goods.spec_image_index ?? 2;
+                if (index === specIdx) {
+                    ElMessage.warning('选中的图片已经是规格图');
                     this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
                     return;
                 }
@@ -559,20 +633,19 @@ function initApp() {
                     const response = await axios.post(`${API_BASE_URL}/goods/swap-image`, {
                         id: goods.id,
                         source_index: index,
-                        target_index: 2
+                        target_index: specIdx
                     });
                     
                     if (response.data.code === 0) {
-                        ElMessage.success('第3张图已更换');
+                        ElMessage.success('规格图已更换');
                         this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
-                        // 刷新该商品的数据
                         await this.refreshGoodsItem(goods.id);
                     } else {
                         ElMessage.error(response.data.message || '操作失败');
                         this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
                     }
                 } catch (error) {
-                    console.error('更换第3张图失败:', error);
+                    console.error('更换规格图失败:', error);
                     ElMessage.error('操作失败: ' + (error.message || '网络错误'));
                     this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
                 }
@@ -605,50 +678,18 @@ function initApp() {
                     this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
                 }
             } else if (selectingMode === 'remove') {
-                // 删除轮播图
                 if (goods.image_list.length <= 1) {
                     ElMessage.warning('轮播图只剩一张，无法删除');
                     this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
                     return;
                 }
-                
-                // 二次确认
-                try {
-                    await ElMessageBox.confirm(
-                        `确定要删除第${index + 1}张图片吗？`,
-                        '删除确认',
-                        {
-                            confirmButtonText: '确定',
-                            cancelButtonText: '取消',
-                            type: 'warning'
-                        }
-                    );
-                } catch {
-                    // 用户取消
-                    this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
-                    return;
-                }
-                
-                try {
-                    const response = await axios.post(`${API_BASE_URL}/goods/remove-image`, {
-                        id: goods.id,
-                        image_index: index
-                    });
-                    
-                    if (response.data.code === 0) {
-                        ElMessage.success('图片已删除');
-                        this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
-                        // 刷新该商品的数据
-                        await this.refreshGoodsItem(goods.id);
-                    } else {
-                        ElMessage.error(response.data.message || '操作失败');
-                        this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
-                    }
-                } catch (error) {
-                    console.error('删除图片失败:', error);
-                    ElMessage.error('操作失败: ' + (error.message || '网络错误'));
-                    this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
-                }
+                this.selectingImageMap = { ...this.selectingImageMap, [goods.id]: undefined };
+                this.removeImageGoods = goods;
+                this.removeImageIndex = index;
+                this.removeSelectedTag = '';
+                this.removeCustomNote = '';
+                this.removeImageDialogVisible = true;
+                this.loadReasonHistory('carousel');
             }
         },
         // 刷新单个商品数据
@@ -736,16 +777,17 @@ function initApp() {
             if (currentUrl) {
                 const norm = this.normalizeLabelUrl(currentUrl);
                 lab = labels.find(l => {
+                    if (!l || (l.original_url == null && l.image_url == null)) return false;
                     // 同时匹配 original_url (优先) 和 image_url (兼容旧数据或本地图)
-                    return this.normalizeLabelUrl(l.original_url) === norm || 
-                           this.normalizeLabelUrl(l.image_url) === norm;
+                    return this.normalizeLabelUrl(l.original_url || '') === norm ||
+                           this.normalizeLabelUrl(l.image_url || '') === norm;
                 });
             }
 
             // 2. 尝试索引匹配 (Fallback)
             if (!lab) {
                 // 情况 A: 标签对象自带 index 字段
-                lab = labels.find(l => l.index === index);
+                lab = labels.find(l => l && l.index === index);
                 
                 // 情况 B: 长度一致，直接按位置取 (Backend 注释说"与 image_list 同序")
                 if (!lab && labels.length === imgList.length) {
@@ -760,9 +802,10 @@ function initApp() {
                     console.log(`  Current: ${currentUrl} -> ${this.normalizeLabelUrl(currentUrl)}`);
                 }
                 console.log(`  Candidates:`, labels.map(l => {
+                    if (!l) return '[null]';
                     const u1 = l.original_url;
                     const u2 = l.image_url;
-                    return `[${l.index}] Orig: ${u1} -> ${this.normalizeLabelUrl(u1)} | Img: ${u2} -> ${this.normalizeLabelUrl(u2)}`;
+                    return `[${l.index}] Orig: ${u1} -> ${this.normalizeLabelUrl(u1 || '')} | Img: ${u2} -> ${this.normalizeLabelUrl(u2 || '')}`;
                 }));
             }
 
@@ -800,18 +843,21 @@ function initApp() {
             const currentUrl = imgList[index];
             if (currentUrl) {
                 const norm = this.normalizeLabelUrl(currentUrl);
-                let lab = labels.find(l => this.normalizeLabelUrl(l.original_url) === norm || this.normalizeLabelUrl(l.image_url) === norm);
-                if (!lab) lab = labels.find(l => l.index === index);
-                if (!lab && labels.length === imgList.length) lab = labels[index];
+                let lab = labels.find(l => l && (this.normalizeLabelUrl(l.original_url || '') === norm || this.normalizeLabelUrl(l.image_url || '') === norm));
+                if (!lab) lab = labels.find(l => l && l.index === index);
+                if (!lab && labels.length === imgList.length) lab = labels[index] || null;
                 return lab;
             }
-            if (labels.length === imgList.length) return labels[index];
+            if (labels.length === imgList.length) return labels[index] || null;
             return null;
         },
-        // 打开记录 badcase 弹窗
+        // 打开记录 badcase 弹窗（简化：原因标签+手填 + 补充说明）
         openBadcaseDialog() {
-            this.badcaseForm = { feedback_type: '其他', feedback_note: '', suggested_correct: '' };
+            this.badcaseSelectedTag = '';
+            this.badcaseCustomNote = '';
+            this.badcaseExtra = '';
             this.badcaseDialogVisible = true;
+            this.loadReasonHistory('carousel');
         },
         // 提交记录 badcase
         async submitBadcase() {
@@ -820,21 +866,24 @@ function initApp() {
             if (!goods || idx == null) return;
             const imgUrl = (goods.image_list || [])[idx] || '';
             const lab = this.getImageLabelRaw(goods, idx);
-            const productId = goods.goods_id || goods.id || '';
+            const productId = (goods.goods_id != null ? goods.goods_id : goods.product_id) || goods.id || '';
             if (!imgUrl || !productId) {
                 ElMessage.warning('缺少图片或商品信息');
                 return;
             }
+            const reason = (this.badcaseCustomNote || '').trim() || this.badcaseSelectedTag || '';
+            const extra = (this.badcaseExtra || '').trim();
+            const feedback_note = extra ? (reason ? reason + '；' + extra : extra) : reason;
             this.badcaseSubmitting = true;
             try {
                 const res = await axios.post(`${API_BASE_URL}/goods/save-label-badcase`, {
-                    product_id: productId,
+                    product_id: String(productId),
                     image_url: imgUrl,
                     image_index: idx,
                     carousel_label: lab,
-                    feedback_type: this.badcaseForm.feedback_type,
-                    feedback_note: this.badcaseForm.feedback_note.trim(),
-                    suggested_correct: this.badcaseForm.suggested_correct.trim()
+                    feedback_type: '其他',
+                    feedback_note: feedback_note,
+                    suggested_correct: ''
                 });
                 if (res.data.code === 0) {
                     ElMessage.success('已记录');

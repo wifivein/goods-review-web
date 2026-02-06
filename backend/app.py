@@ -46,16 +46,165 @@ INFRINGEMENT_API_URL = "https://gwfpod.com/api/collect/product/batch_infringemen
 # 使用您抓包提供的新 Token
 DEFAULT_AUTH_TOKEN = "13bc0f9d096f277bcce36a25b274b74a0c7c6fe3"
 
-# 毛毯标准规格图 URL（审核通过时替换第 3 张图）
-BLANKET_SPEC_IMAGE_URL = "https://img.kwcdn.com/product/20195053a14/c2ddafb8-2eee-497c-9c81-c45254e903bf_800x800.png"
+# 品类配置改为读库，见 _load_category_config / _resolve_category_for_product_id；此处仅作 approve 无配置时的兜底
+DEFAULT_SPEC_IMAGE_URL = "https://img.kwcdn.com/product/20195053a14/c2ddafb8-2eee-497c-9c81-c45254e903bf_800x800.png"
 
 # OCRPlus 图片服务（按 URL 查 image_assets 标签）；原图标签唯一来源 image_assets/OCRPlus
 OCRPLUS_BASE_URL = os.getenv('OCRPLUS_BASE_URL', 'http://localhost:5002').rstrip('/')
+
+# 预审改进支撑系统（preview-lab）：审核行为反馈，可选；未配置 PREVIEW_LAB_URL 则不发送
+PREVIEW_LAB_URL = os.getenv('PREVIEW_LAB_URL', '').rstrip('/')
+
+
+def _notify_preview_lab_feedback(scene: str, goods_id: str, action: str, payload: dict = None, human_note: str = None):
+    """审核行为发生后通知 preview-lab 记录一条反馈。失败只打日志，不影响主流程。"""
+    if not PREVIEW_LAB_URL:
+        return
+    try:
+        body = {"scene": scene, "goods_id": str(goods_id), "action": action}
+        if payload:
+            body["payload"] = payload
+        if human_note and str(human_note).strip():
+            body["human_note"] = str(human_note).strip()[:512]
+        r = requests.post(f"{PREVIEW_LAB_URL}/api/feedback/record", json=body, timeout=3)
+        if r.status_code != 200 or (r.json() or {}).get("code") != 0:
+            log.warning("preview-lab feedback record failed: %s %s", r.status_code, r.text)
+    except Exception as e:
+        log.warning("preview-lab feedback record error: %s", e)
 
 
 def get_db_connection():
     """获取数据库连接"""
     return pymysql.connect(**DB_CONFIG)
+
+
+# ---------- 品类配置（读库，与 N8N 工作流共用） ----------
+def _load_category_config(cursor):
+    """从 goods_review_category_config 表加载所有品类，按 sort_order。返回 list of dict。"""
+    try:
+        cursor.execute("""
+            SELECT config_key, display_name, keywords, spec_image_index, spec_image_url,
+                   template_name, ref_product_template_id, sort_order
+            FROM goods_review_category_config
+            ORDER BY sort_order ASC, id ASC
+        """)
+        rows = cursor.fetchall()
+        if not rows:
+            return []
+        out = []
+        for r in rows:
+            kw = r.get('keywords')
+            if isinstance(kw, str):
+                try:
+                    kw = json.loads(kw)
+                except Exception:
+                    kw = [kw] if kw else []
+            if not isinstance(kw, list):
+                kw = []
+            out.append({
+                'config_key': r.get('config_key') or '',
+                'display_name': r.get('display_name') or '',
+                'keywords': kw,
+                'spec_image_index': int(r.get('spec_image_index', 2)),
+                'spec_image_url': (r.get('spec_image_url') or '').strip() or DEFAULT_SPEC_IMAGE_URL,
+                'template_name': (r.get('template_name') or '').strip(),
+                'ref_product_template_id': r.get('ref_product_template_id'),
+            })
+        return out
+    except Exception as e:
+        log.warning("load category config failed: %s", e)
+        return []
+
+
+def _resolve_category_for_product_id(cursor, product_id, category_config_list=None):
+    """
+    根据 product_id 查 access_logs 取 product_category，关键词匹配得到品类配置。
+    返回 (config_key, spec_image_index, spec_image_url, category_fallback)。
+    category_fallback=True 表示未匹配到或无记录，使用了默认品类（blanket）。
+    """
+    default_spec = ('blanket', 2, DEFAULT_SPEC_IMAGE_URL, True)
+    if not product_id:
+        return default_spec
+    if not category_config_list:
+        try:
+            cursor.execute("""
+                SELECT config_key, display_name, keywords, spec_image_index, spec_image_url,
+                       template_name, ref_product_template_id
+                FROM goods_review_category_config
+                ORDER BY sort_order ASC, id ASC
+            """)
+            rows = cursor.fetchall()
+            category_config_list = []
+            for r in rows:
+                kw = r.get('keywords')
+                if isinstance(kw, str):
+                    try:
+                        kw = json.loads(kw)
+                    except Exception:
+                        kw = [kw] if kw else []
+                if not isinstance(kw, list):
+                    kw = []
+                category_config_list.append({
+                    'config_key': r.get('config_key') or '',
+                    'keywords': kw,
+                    'spec_image_index': int(r.get('spec_image_index', 2)),
+                    'spec_image_url': (r.get('spec_image_url') or '').strip() or DEFAULT_SPEC_IMAGE_URL,
+                })
+        except Exception as e:
+            log.warning("load category config in resolve failed: %s", e)
+            return default_spec
+    if not category_config_list:
+        return default_spec
+
+    raw_category = ''
+    try:
+        cursor.execute("""
+            SELECT product_category FROM access_logs
+            WHERE goods_id = %s AND product_category IS NOT NULL AND product_category != ''
+            ORDER BY access_time DESC, id DESC LIMIT 1
+        """, (product_id,))
+        row = cursor.fetchone()
+        if row and row.get('product_category'):
+            raw_category = (row['product_category'] or '').strip()
+    except Exception as e:
+        log.debug("access_logs product_category lookup failed: %s", e)
+
+    if not raw_category:
+        return default_spec
+
+    for cfg in category_config_list:
+        keywords = cfg.get('keywords') or []
+        for kw in keywords:
+            if kw and str(kw).strip() and str(kw).strip() in raw_category:
+                return (
+                    cfg.get('config_key') or 'blanket',
+                    cfg.get('spec_image_index', 2),
+                    cfg.get('spec_image_url') or DEFAULT_SPEC_IMAGE_URL,
+                    False,
+                )
+    return default_spec
+
+
+def _log_negative_reason(dimension: str, reason: str):
+    """负向操作原因落库，供历史标签查询。失败只打日志，不影响主流程。"""
+    if not reason or not isinstance(reason, str):
+        return
+    r = reason.strip()[:512]
+    if not r or dimension not in ('goods', 'carousel'):
+        return
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO negative_reason_log (dimension, reason) VALUES (%s, %s)",
+            (dimension, r),
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        if 'doesn\'t exist' not in str(e) and "doesn't exist" not in str(e):
+            log.warning("negative_reason_log insert failed: %s", e)
 
 
 # ---------- 图片原始标签：唯一来源 image_assets + OCRPlus，其它业务只消费、不做源 ----------
@@ -251,6 +400,8 @@ SQL_GOODS_BASE_FIELDS = """
     id, master_user_id as user_id, product_id as goods_id, 
     product_name as title, product_name as name, 
     carousel_pic_urls as image_list,
+    replaced_3rd_image_url,
+    replaced_spec_image_url,
     create_time, update_time,
     is_publish as isupload, process_status as uploadstatus, 
     review_status,
@@ -317,6 +468,16 @@ def _process_goods_row(row):
     else:
         row['main_image'] = ""
         row['cover'] = ""
+
+    # 2.1 出图/query 用轮播图：若有被替换掉的原规格图，加回规格图位，供 /api/image/query 和出图使用
+    spec_idx = row.get('spec_image_index', 2)
+    replaced_spec = row.get('replaced_spec_image_url') or row.get('replaced_3rd_image_url') or None
+    if replaced_spec and isinstance(img_list, list) and len(img_list) > spec_idx:
+        query_list = list(img_list)
+        query_list[spec_idx] = replaced_spec
+        row['image_list_for_query'] = query_list
+    else:
+        row['image_list_for_query'] = list(img_list) if isinstance(img_list, list) else []
 
     # 3. 时间处理
     # 列表页需要 create_time_str
@@ -509,6 +670,43 @@ def get_statistics():
         }), 500
 
 
+@app.route('/api/goods/reason-history', methods=['GET'])
+def get_reason_history():
+    """负向操作原因历史，按维度返回去重后的最近原因列表（供废弃/删图/badcase 弹窗标签用）"""
+    try:
+        dimension = (request.args.get('dimension') or '').strip()
+        if dimension not in ('goods', 'carousel'):
+            return jsonify({'code': -1, 'message': 'dimension 必填且为 goods 或 carousel'}), 400
+        try:
+            limit = min(int(request.args.get('limit', 20)), 50)
+        except ValueError:
+            limit = 20
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """SELECT reason FROM negative_reason_log
+                   WHERE dimension = %s AND reason != ''
+                   GROUP BY reason
+                   ORDER BY MAX(created_at) DESC
+                   LIMIT %s""",
+                (dimension, limit),
+            )
+            rows = cursor.fetchall()
+            items = [r['reason'] for r in rows if r.get('reason')]
+        except pymysql.err.OperationalError as e:
+            if 'doesn\'t exist' in str(e) or "doesn't exist" in str(e):
+                items = []
+            else:
+                raise
+        finally:
+            cursor.close()
+            conn.close()
+        return jsonify({'code': 0, 'message': 'success', 'data': {'items': items}})
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
 @app.route('/api/goods/first-pending-upload', methods=['GET'])
 def get_first_pending_upload():
     """获取第一个待上传商品的ID和位置信息"""
@@ -636,8 +834,8 @@ def get_goods_list():
         
         where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
         
-        # 排序逻辑
-        order_clause = "ORDER BY create_time DESC"
+        # 排序逻辑：默认按创建时间倒序（最新在前），同秒用 id 倒序稳定排序
+        order_clause = "ORDER BY create_time DESC, id DESC"
         if order_by == 'id_asc':
             order_clause = "ORDER BY id ASC"
         elif order_by == 'api_id_asc':
@@ -661,8 +859,15 @@ def get_goods_list():
         cursor.execute(list_sql, params)
         goods_list = cursor.fetchall()
         
-        # 处理JSON字段和补全main_image
+        # 品类解析：按 product_id 查 access_logs 关键词匹配，带出 spec_image_index / spec_image_url
+        category_config_list = _load_category_config(cursor)
         for goods in goods_list:
+            pid = goods.get('goods_id') or goods.get('product_id')
+            config_key, spec_idx, spec_url, fallback = _resolve_category_for_product_id(cursor, pid, category_config_list)
+            goods['spec_image_index'] = spec_idx
+            goods['spec_image_url'] = spec_url
+            goods['category_config_key'] = config_key
+            goods['category_fallback'] = fallback  # True 表示未识别到品类，按默认毛毯处理，前端可提示
             _process_goods_row(goods)
         
         # 优先从 OCRPlus 按 URL 拉标签，失败或空则用库内 carousel_labels
@@ -672,6 +877,8 @@ def get_goods_list():
             if labels_map:
                 for g in goods_list:
                     _enrich_goods_carousel_labels(g, labels_map)
+            else:
+                log.debug("列表页 OCRPlus 标签未返回，使用库内 carousel_labels（可能不是最新）")
         
         cursor.close()
         conn.close()
@@ -1069,6 +1276,14 @@ def get_goods_detail(goods_id):
                 'message': '商品不存在'
             }), 404
         
+        # 品类解析
+        pid = goods.get('goods_id') or goods.get('product_id')
+        category_config_list = _load_category_config(cursor)
+        config_key, spec_idx, spec_url, fallback = _resolve_category_for_product_id(cursor, pid, category_config_list)
+        goods['spec_image_index'] = spec_idx
+        goods['spec_image_url'] = spec_url
+        goods['category_config_key'] = config_key
+        goods['category_fallback'] = fallback
         # 处理JSON字段和补全main_image
         _process_goods_row(goods)
         
@@ -1189,6 +1404,18 @@ def save_goods():
         save_result = save_goods_to_external_api(goods_id)
         
         if save_result['success']:
+            # 通知预审 Lab（可选）：失败不抛错、不影响返回
+            try:
+                action = "reorder" if carousel_updated_list is not None else "approve"
+                payload = {"final_order": carousel_updated_list} if carousel_updated_list else None
+                _notify_preview_lab_feedback(
+                    "carousel_label",
+                    goods.get("product_id") or goods_id,
+                    action,
+                    payload,
+                )
+            except Exception:
+                pass
             return jsonify({
                 'code': 0,
                 'message': '保存成功',
@@ -1329,7 +1556,7 @@ def update_goods_carousel_labels():
 
 @app.route('/api/goods/approve', methods=['POST'])
 def approve_goods():
-    """审核通过商品（review_status 从 0 变成 1）。毛毯类替换第 3 张图为标准规格图；不足 3 张则作废。"""
+    """审核通过商品（review_status 从 0 变成 1）。按品类替换规格图位为标准图；不足 4 张作废（官方最少 5 张，4 张可补 1 张材质图）。"""
     try:
         data = request.json
         goods_id = data.get('id')
@@ -1355,8 +1582,8 @@ def approve_goods():
         if not isinstance(image_list, list):
             image_list = []
 
-        # 不足 3 张：作废处理，不替换、不回存
-        if len(image_list) < 3:
+        # 不足 4 张：作废（官方最少 5 张，4 张可补 1 张材质图，不足 4 张只能作废）
+        if len(image_list) < 4:
             title = (goods.get('product_name') or '') if isinstance(goods.get('product_name'), str) else ''
             if '【⚠️已废弃】' not in title and '⚠️废弃' not in title:
                 title = '【⚠️已废弃】' + title
@@ -1365,16 +1592,27 @@ def approve_goods():
             conn.commit()
             cursor.close()
             conn.close()
+            try:
+                _notify_preview_lab_feedback("carousel_label", goods.get("product_id") or goods_id, "discard", {"reason": "图片不足4张"})
+            except Exception:
+                pass
             return jsonify({
                 'code': 0,
-                'message': '图片不足 3 张，已按废弃处理',
+                'message': '图片不足 4 张，已按废弃处理',
                 'data': {'id': goods_id, 'review_status': 2}
             })
 
-        # 替换第 3 张为标准规格图
-        old_3rd = image_list[2]
-        old_3rd_base = (old_3rd or '').split('?')[0]
-        image_list[2] = BLANKET_SPEC_IMAGE_URL
+        # 按品类取规格图位置与标准图 URL
+        pid = goods.get('product_id')
+        _config_key, spec_idx, spec_url, _fallback = _resolve_category_for_product_id(cursor, pid)
+        if spec_idx >= len(image_list):
+            spec_idx = min(2, len(image_list) - 1)  # 越界时兜底
+            spec_url = DEFAULT_SPEC_IMAGE_URL
+
+        # 替换规格图位为标准图
+        old_spec = image_list[spec_idx]
+        old_spec_base = (old_spec or '').split('?')[0]
+        image_list[spec_idx] = spec_url
         new_carousel = json.dumps(image_list, ensure_ascii=False)
 
         sku_list = []
@@ -1392,30 +1630,40 @@ def approve_goods():
                     continue
                 u = copy.deepcopy(s)
                 hit = False
-                if old_3rd_base:
+                if old_spec_base:
                     for f in ('pic_url', 'pic', 'image'):
                         v = (u.get(f) or '').strip()
-                        if v and (v.split('?')[0] == old_3rd_base):
+                        if v and (v.split('?')[0] == old_spec_base):
                             hit = True
                             break
                 if hit:
-                    u['pic_url'] = u['pic'] = u['image'] = BLANKET_SPEC_IMAGE_URL
+                    u['pic_url'] = u['pic'] = u['image'] = spec_url
                 updated.append(u)
             sku_list = ensure_sku_dimensions(updated)
-            update_sql = "UPDATE temu_goods_v2 SET carousel_pic_urls = %s, sku_list = %s, review_status = 1 WHERE id = %s"
-            cursor.execute(update_sql, (new_carousel, json.dumps(sku_list, ensure_ascii=False), goods_id))
+            update_sql = "UPDATE temu_goods_v2 SET carousel_pic_urls = %s, sku_list = %s, review_status = 1, replaced_spec_image_url = %s WHERE id = %s"
+            cursor.execute(update_sql, (new_carousel, json.dumps(sku_list, ensure_ascii=False), old_spec or None, goods_id))
         else:
-            update_sql = "UPDATE temu_goods_v2 SET carousel_pic_urls = %s, review_status = 1 WHERE id = %s"
-            cursor.execute(update_sql, (new_carousel, goods_id))
+            update_sql = "UPDATE temu_goods_v2 SET carousel_pic_urls = %s, review_status = 1, replaced_spec_image_url = %s WHERE id = %s"
+            cursor.execute(update_sql, (new_carousel, old_spec or None, goods_id))
         conn.commit()
-        # 替换第3张图后同步 image_goods_mapping（该商品映射为当前轮播图列表）
         _sync_goods_mapping(cursor, goods.get('product_id'), image_list)
+        if old_spec and goods.get('product_id'):
+            try:
+                pid_int = int(goods.get('product_id'))
+                h = _url_to_hash(old_spec)
+                if h:
+                    cursor.execute(
+                        "INSERT IGNORE INTO image_goods_mapping (url_hash, original_goods_id) VALUES (%s, %s)",
+                        (h, pid_int),
+                    )
+            except (TypeError, ValueError):
+                pass
         conn.commit()
         cursor.close()
         conn.close()
 
         save_result = save_goods_to_external_api(goods_id)
-        msg = '商品已审核通过，第3张已替换为标准规格图' + ('，回存成功' if save_result['success'] else '，但回存失败')
+        msg = '商品已审核通过，规格图已替换为标准图' + ('，回存成功' if save_result['success'] else '，但回存失败')
 
         api_id = goods.get('api_id')
         infringement_ok = False
@@ -1445,6 +1693,17 @@ def approve_goods():
         elif api_id is not None:
             msg += '，侵权检测提交失败'
 
+        # 通知预审 Lab（可选）：审核通过；失败不抛错、不影响返回
+        try:
+            _notify_preview_lab_feedback(
+                "carousel_label",
+                goods.get("product_id") or goods_id,
+                "approve",
+                {"first_image_index": 0, "spec_image_index": spec_idx},
+            )
+        except Exception:
+            pass
+
         return jsonify({
             'code': 0,
             'message': msg,
@@ -1460,6 +1719,7 @@ def discard_goods():
     try:
         data = request.json
         goods_id = data.get('id')
+        note = (data.get('note') or '').strip() or None  # 废弃原因/说明，可选，会发给 preview-lab 的 human_note
         
         if not goods_id:
             return jsonify({
@@ -1470,8 +1730,8 @@ def discard_goods():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 获取当前商品
-        sql = "SELECT id, product_name, review_status FROM temu_goods_v2 WHERE id = %s"
+        # 获取当前商品（含 product_id 即原商品ID，反馈给 Lab 时统一用原商品ID）
+        sql = "SELECT id, product_id, product_name, review_status FROM temu_goods_v2 WHERE id = %s"
         cursor.execute(sql, (goods_id,))
         goods = cursor.fetchone()
         
@@ -1508,6 +1768,17 @@ def discard_goods():
         # 回存到外部系统
         save_result = save_goods_to_external_api(goods_id)
         
+        # 通知预审 Lab（可选）：失败不抛错、不影响返回；带上废弃说明便于后续 badcase 分析。goods_id 统一用原商品ID（product_id）
+        try:
+            payload = {"reason": "用户废弃"}
+            if note:
+                payload["note"] = note[:512]
+            _notify_preview_lab_feedback("carousel_label", str(goods.get("product_id") or goods_id), "discard", payload, human_note=note)
+        except Exception:
+            pass
+        if note:
+            _log_negative_reason('goods', note)
+        
         return jsonify({
             'code': 0,
             'message': '商品已标记为废弃' + ('，回存成功' if save_result['success'] else '，但回存失败'),
@@ -1518,6 +1789,147 @@ def discard_goods():
             'code': -1,
             'message': f'操作失败: {str(e)}'
         }), 500
+
+
+# ---------- 品类配置 CRUD（审核页维护，工作流读库共用） ----------
+@app.route('/api/category-config', methods=['GET'])
+def list_category_config():
+    """获取所有品类配置，按 sort_order"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, config_key, display_name, keywords, spec_image_index, spec_image_url,
+                   template_name, ref_product_template_id, sort_order, created_at, updated_at
+            FROM goods_review_category_config
+            ORDER BY sort_order ASC, id ASC
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        for r in rows:
+            if isinstance(r.get('keywords'), str):
+                try:
+                    r['keywords'] = json.loads(r['keywords'])
+                except Exception:
+                    r['keywords'] = [r['keywords']] if r.get('keywords') else []
+        return jsonify({'code': 0, 'message': 'success', 'data': rows})
+    except Exception as e:
+        log.warning("list category config failed: %s", e)
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
+@app.route('/api/category-config', methods=['POST'])
+def create_category_config():
+    """新增品类配置"""
+    try:
+        data = request.json
+        config_key = (data.get('config_key') or '').strip()
+        display_name = (data.get('display_name') or '').strip()
+        keywords = data.get('keywords')
+        if not config_key:
+            return jsonify({'code': -1, 'message': 'config_key 不能为空'}), 400
+        if isinstance(keywords, list):
+            keywords_json = json.dumps(keywords, ensure_ascii=False)
+        else:
+            keywords_json = json.dumps([], ensure_ascii=False)
+        spec_image_index = int(data.get('spec_image_index', 2))
+        spec_image_url = (data.get('spec_image_url') or '').strip() or DEFAULT_SPEC_IMAGE_URL
+        template_name = (data.get('template_name') or '').strip()
+        ref_product_template_id = data.get('ref_product_template_id')
+        if ref_product_template_id is not None:
+            ref_product_template_id = int(ref_product_template_id)
+        sort_order = int(data.get('sort_order', 0))
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO goods_review_category_config
+            (config_key, display_name, keywords, spec_image_index, spec_image_url, template_name, ref_product_template_id, sort_order)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (config_key, display_name, keywords_json, spec_image_index, spec_image_url, template_name, ref_product_template_id, sort_order))
+        conn.commit()
+        rid = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        return jsonify({'code': 0, 'message': 'success', 'data': {'id': rid, 'config_key': config_key}})
+    except Exception as e:
+        log.warning("create category config failed: %s", e)
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
+@app.route('/api/category-config/<config_key>', methods=['PUT'])
+def update_category_config(config_key):
+    """更新品类配置"""
+    try:
+        data = request.json
+        display_name = (data.get('display_name') or '').strip()
+        keywords = data.get('keywords')
+        if isinstance(keywords, list):
+            keywords_json = json.dumps(keywords, ensure_ascii=False)
+        else:
+            keywords_json = None
+        spec_image_index = data.get('spec_image_index')
+        spec_image_url = data.get('spec_image_url')
+        template_name = data.get('template_name')
+        ref_product_template_id = data.get('ref_product_template_id')
+        sort_order = data.get('sort_order')
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        updates = []
+        params = []
+        if display_name is not None:
+            updates.append("display_name = %s")
+            params.append(display_name)
+        if keywords_json is not None:
+            updates.append("keywords = %s")
+            params.append(keywords_json)
+        if spec_image_index is not None:
+            updates.append("spec_image_index = %s")
+            params.append(int(spec_image_index))
+        if spec_image_url is not None:
+            updates.append("spec_image_url = %s")
+            params.append(str(spec_image_url).strip())
+        if template_name is not None:
+            updates.append("template_name = %s")
+            params.append(str(template_name).strip())
+        if ref_product_template_id is not None:
+            updates.append("ref_product_template_id = %s")
+            params.append(int(ref_product_template_id) if ref_product_template_id else None)
+        if sort_order is not None:
+            updates.append("sort_order = %s")
+            params.append(int(sort_order))
+        if not updates:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': 0, 'message': '无变更'})
+        params.append(config_key)
+        cursor.execute(
+            "UPDATE goods_review_category_config SET " + ", ".join(updates) + " WHERE config_key = %s",
+            params,
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({'code': 0, 'message': 'success'})
+    except Exception as e:
+        log.warning("update category config failed: %s", e)
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
+@app.route('/api/category-config/<config_key>', methods=['DELETE'])
+def delete_category_config(config_key):
+    """删除品类配置（谨慎：工作流/审核会回退到默认）"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM goods_review_category_config WHERE config_key = %s", (config_key,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({'code': 0, 'message': 'success'})
+    except Exception as e:
+        log.warning("delete category config failed: %s", e)
+        return jsonify({'code': -1, 'message': str(e)}), 500
 
 
 @app.route('/api/goods/swap-image', methods=['POST'])
@@ -1630,6 +2042,7 @@ def remove_image():
         data = request.json
         goods_id = data.get('id')
         image_index = data.get('image_index')  # 要删除的图片索引
+        note = (data.get('note') or '').strip() or None  # 可选，同步到 preview-lab
         
         if not goods_id or image_index is None:
             return jsonify({
@@ -1747,6 +2160,23 @@ def remove_image():
         
         # 回存到外部系统
         save_result = save_goods_to_external_api(goods_id)
+        
+        # 通知预审 Lab（delete_image），goods_id 用原商品ID
+        try:
+            payload = {"deleted_indices": [image_index]}
+            if note:
+                payload["note"] = note[:512]
+            _notify_preview_lab_feedback(
+                "carousel_label",
+                str(goods.get("product_id") or goods_id),
+                "delete_image",
+                payload,
+                human_note=note,
+            )
+        except Exception:
+            pass
+        if note:
+            _log_negative_reason('carousel', note)
         
         return jsonify({
             'code': 0,
@@ -1955,6 +2385,8 @@ def save_label_badcase():
             cursor.close()
             conn.close()
 
+        if feedback_note and str(feedback_note).strip():
+            _log_negative_reason('carousel', str(feedback_note).strip())
         return jsonify({'code': 0, 'message': '已记录', 'data': {'id': bid}})
     except Exception as e:
         return jsonify({'code': -1, 'message': str(e)}), 500

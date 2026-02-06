@@ -499,6 +499,14 @@
             font-weight: bold !important;
             height: auto !important;
         }
+        .wait-preprocess-placeholder {
+            display: inline-block;
+            padding: 12px 24px;
+            font-size: 16px;
+            color: #a8abb2;
+            background: #f0f0f0;
+            border-radius: 4px;
+        }
         /* 销量：不抢眼，与商品ID同一行或紧跟 */
         .goods-sales-badge {
             font-size: 13px;
@@ -850,6 +858,21 @@
                 gap: 5px;
             }
         }
+        /* 负向操作原因：标签可选 + 手填 */
+        .negative-note-block { margin-top: 12px; }
+        .note-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+        .note-tag {
+            display: inline-block;
+            padding: 4px 12px;
+            font-size: 13px;
+            border-radius: 4px;
+            background: #f0f2f5;
+            color: #606266;
+            cursor: pointer;
+            border: 1px solid transparent;
+        }
+        .note-tag:hover { background: #e4e7ed; }
+        .note-tag.active { background: #ecf5ff; color: #409eff; border-color: #409eff; }
     </style>
 </head>
 <body>
@@ -859,6 +882,7 @@
                 <div class="header-title-section">
                     <h1>📦 商品检查和修正系统</h1>
                     <a href="image-lookup.html" class="header-link" title="按 URL 查图片是否在库、本地路径、标签、关联商品数，支持一键重打标">图片查现状</a>
+                    <a href="category-config.html" class="header-link" title="维护品类配置，工作流与审核共用">品类配置</a>
                     <el-button 
                         class="search-toggle-btn"
                         @click="toggleSearchBar"
@@ -914,7 +938,7 @@
                     <el-form-item>
                         <el-button type="primary" @click="handleSearch">搜索</el-button>
                         <el-button @click="handleReset">重置</el-button>
-                        <el-button type="success" @click="loadGoodsList">刷新列表</el-button>
+                        <el-button type="success" @click="pagination.page = 1; loadGoodsList()">刷新列表</el-button>
                     </el-form-item>
                 </el-form>
             </div>
@@ -966,14 +990,17 @@
                                 </div>
                             </div>
                             <div class="goods-header-actions">
-                                <el-button 
-                                    v-if="goodsList[0].review_status === 0"
-                                    type="success" 
-                                    size="large" 
-                                    @click="handleApprove(goodsList[0])"
-                                >
-                                    审核通过
-                                </el-button>
+                                <template v-if="goodsList[0].review_status === 0">
+                                    <el-button 
+                                        v-if="goodsList[0].uploadstatus === 2"
+                                        type="success" 
+                                        size="large" 
+                                        @click="handleApprove(goodsList[0])"
+                                    >
+                                        审核通过
+                                    </el-button>
+                                    <span v-else class="wait-preprocess-placeholder">等待预处理</span>
+                                </template>
                             </div>
                         </div>
                     </template>
@@ -990,10 +1017,11 @@
                             </div>
                             <div class="third-image-container mobile-third-image">
                                 <div style="margin-bottom: 5px;">
-                                    <strong style="color: #67c23a; font-size: 12px;">第3张</strong>
+                                    <strong style="color: #67c23a; font-size: 12px;">规格图</strong>
+                                    <span v-if="goodsList[0].category_fallback" style="color: #e6a23c; font-size: 11px;">（未识别品类，按毛毯处理）</span>
                                 </div>
-                                <div class="third-image-preview clickable-image" v-if="goodsList[0].image_list && goodsList[0].image_list.length >= 3" @click="showImageActionDialog(goodsList[0], 2)">
-                                    <img :src="getThumbnailUrl(goodsList[0].image_list[2], 100)" @error="handleImageError">
+                                <div class="third-image-preview clickable-image" v-if="goodsList[0].image_list && goodsList[0].image_list.length > (goodsList[0].spec_image_index ?? 2)" @click="showImageActionDialog(goodsList[0], goodsList[0].spec_image_index ?? 2)">
+                                    <img :src="getThumbnailUrl(goodsList[0].image_list[goodsList[0].spec_image_index ?? 2], 100)" @error="handleImageError">
                                 </div>
                                 <div v-else class="empty-image-placeholder">暂无</div>
                             </div>
@@ -1061,14 +1089,17 @@
                                 </div>
                             </div>
                             <div class="goods-header-actions">
-                                <el-button 
-                                    v-if="goods.review_status === 0"
-                                    type="success" 
-                                    size="large" 
-                                    @click="handleApprove(goods)"
-                                >
-                                    审核通过
-                                </el-button>
+                                <template v-if="goods.review_status === 0">
+                                    <el-button 
+                                        v-if="goods.uploadstatus === 2"
+                                        type="success" 
+                                        size="large" 
+                                        @click="handleApprove(goods)"
+                                    >
+                                        审核通过
+                                    </el-button>
+                                    <span v-else class="wait-preprocess-placeholder">等待预处理</span>
+                                </template>
                             </div>
                         </div>
                     </template>
@@ -1098,15 +1129,16 @@
                             </div>
                         </div>
 
-                        <!-- 右侧：标题、第三张轮播图（桌面端）和所有轮播图 -->
+                        <!-- 右侧：标题、规格图（桌面端）和所有轮播图 -->
                         <div class="goods-right-section">
                             <div class="goods-images-section">
                                 <div class="third-image-container desktop-third-image">
                                     <div style="margin-bottom: 5px; flex-shrink: 0;">
-                                        <strong style="color: #67c23a; font-size: 12px;">第3张</strong>
+                                        <strong style="color: #67c23a; font-size: 12px;">规格图</strong>
+                                        <span v-if="goods.category_fallback" style="color: #e6a23c; font-size: 11px;">（未识别品类，按毛毯处理）</span>
                                     </div>
-                                    <div class="third-image-preview clickable-image" v-if="goods.image_list && goods.image_list.length >= 3" @click="showImageActionDialog(goods, 2)">
-                                        <img :src="getThumbnailUrl(goods.image_list[2])" :alt="goods.title" @error="handleImageError">
+                                    <div class="third-image-preview clickable-image" v-if="goods.image_list && goods.image_list.length > (goods.spec_image_index ?? 2)" @click="showImageActionDialog(goods, goods.spec_image_index ?? 2)">
+                                        <img :src="getThumbnailUrl(goods.image_list[goods.spec_image_index ?? 2])" :alt="goods.title" @error="handleImageError">
                                     </div>
                                     <div v-else style="width: 200px; height: 300px; display: flex; align-items: center; justify-content: center; color: #909399; border: 2px dashed #e4e7ed; border-radius: 4px; font-size: 12px;">
                                         暂无
@@ -1123,7 +1155,7 @@
                                             :key="`${goods.id}-${index}`"
                                             class="all-images-item clickable-image"
                                             :class="{ 
-                                                'third-image': index === 2,
+                                                'third-image': index === (goods.spec_image_index ?? 2),
                                                 'selectable': selectingImageMap[goods.id] !== undefined && selectingImageMap[goods.id] !== null,
                                                 'selected': selectingImageMap[goods.id] === index
                                             }"
@@ -1235,9 +1267,9 @@
                         type="success" 
                         size="large"
                         @click="handleActionFromDialog('replace-third')"
-                        :disabled="currentActionImageIndex === 2 || !currentActionGoods.image_list || currentActionGoods.image_list.length < 3"
+                        :disabled="currentActionImageIndex === (currentActionGoods.spec_image_index ?? 2) || !currentActionGoods.image_list || currentActionGoods.image_list.length <= (currentActionGoods.spec_image_index ?? 2)"
                     >
-                        更换第3张图
+                        更换规格图
                     </el-button>
                     <el-button 
                         type="danger" 
@@ -1261,38 +1293,90 @@
             </template>
         </el-dialog>
 
-        <!-- 记录 badcase 弹窗 -->
+        <!-- 废弃确认弹窗：原因标签（历史）+ 手填，同步到 preview-lab -->
+        <el-dialog
+            v-model="discardDialogVisible"
+            title="废弃确认"
+            width="420px"
+            :close-on-click-modal="false"
+        >
+            <div v-if="discardGoods">
+                <p style="margin-bottom: 12px;">确定要废弃这个商品吗？标题将添加【⚠️已废弃】前缀。</p>
+                <div class="negative-note-block">
+                    <label style="font-size: 13px; color: #606266;">原因（可选）</label>
+                    <div class="note-tags" v-if="(noteHistoryGoods || []).length">
+                        <span
+                            v-for="tag in (noteHistoryGoods || [])"
+                            :key="tag"
+                            class="note-tag"
+                            :class="{ active: discardSelectedTag === tag }"
+                            @click="discardSelectedTag = (discardSelectedTag === tag ? '' : tag)"
+                        >{{ tag }}</span>
+                    </div>
+                    <el-input v-model="discardCustomNote" placeholder="或输入其他原因" maxlength="200" show-word-limit style="margin-top: 8px;" />
+                </div>
+            </div>
+            <template #footer>
+                <el-button @click="discardDialogVisible = false">取消</el-button>
+                <el-button type="warning" :loading="discardSubmitting" @click="confirmDiscard">确定废弃</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 删除轮播图确认弹窗：原因标签（历史）+ 手填 -->
+        <el-dialog
+            v-model="removeImageDialogVisible"
+            title="删除轮播图"
+            width="420px"
+            :close-on-click-modal="false"
+        >
+            <div v-if="removeImageGoods && removeImageIndex !== null">
+                <p style="margin-bottom: 12px;">确定要删除第 {{ removeImageIndex + 1 }} 张图片吗？</p>
+                <div class="negative-note-block">
+                    <label style="font-size: 13px; color: #606266;">原因（可选）</label>
+                    <div class="note-tags" v-if="(noteHistoryCarousel || []).length">
+                        <span
+                            v-for="tag in (noteHistoryCarousel || [])"
+                            :key="tag"
+                            class="note-tag"
+                            :class="{ active: removeSelectedTag === tag }"
+                            @click="removeSelectedTag = (removeSelectedTag === tag ? '' : tag)"
+                        >{{ tag }}</span>
+                    </div>
+                    <el-input v-model="removeCustomNote" placeholder="或输入其他原因" maxlength="200" show-word-limit style="margin-top: 8px;" />
+                </div>
+            </div>
+            <template #footer>
+                <el-button @click="removeImageDialogVisible = false">取消</el-button>
+                <el-button type="danger" :loading="removeImageSubmitting" @click="confirmRemoveImage">确定删除</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 记录 badcase 弹窗（简化：原因标签+手填 + 补充说明） -->
         <el-dialog
             v-model="badcaseDialogVisible"
             title="记录 badcase"
-            width="440px"
+            width="420px"
             :close-on-click-modal="true"
         >
             <div v-if="currentActionGoods && currentActionImageIndex !== null">
-                <div style="margin-bottom: 12px;">
-                    <div style="font-size: 12px; color: #606266; margin-bottom: 4px;">图片URL：</div>
-                    <div style="font-size: 11px; color: #909399; word-break: break-all;">{{ (currentActionGoods.image_list || [])[currentActionImageIndex] || '-' }}</div>
+                <div style="margin-bottom: 10px; font-size: 12px; color: #909399;">当前标签：{{ getImageLabelTitle(currentActionGoods, currentActionImageIndex) || '无' }}</div>
+                <div class="negative-note-block">
+                    <label style="font-size: 13px; color: #606266;">原因（可选）</label>
+                    <div class="note-tags" v-if="(noteHistoryCarousel || []).length">
+                        <span
+                            v-for="tag in (noteHistoryCarousel || [])"
+                            :key="tag"
+                            class="note-tag"
+                            :class="{ active: badcaseSelectedTag === tag }"
+                            @click="badcaseSelectedTag = (badcaseSelectedTag === tag ? '' : tag)"
+                        >{{ tag }}</span>
+                    </div>
+                    <el-input v-model="badcaseCustomNote" placeholder="或输入其他原因" maxlength="200" show-word-limit style="margin-top: 8px;" />
                 </div>
-                <div style="margin-bottom: 12px;">
-                    <div style="font-size: 12px; color: #606266; margin-bottom: 4px;">当前标签：</div>
-                    <div style="font-size: 12px; color: #303133; white-space: pre-wrap;">{{ getImageLabelTitle(currentActionGoods, currentActionImageIndex) || '无' }}</div>
+                <div style="margin-top: 12px;">
+                    <label style="font-size: 13px; color: #606266;">补充说明（可选）</label>
+                    <el-input v-model="badcaseExtra" type="textarea" :rows="2" placeholder="可补充哪里不对、建议正确标签等" maxlength="300" show-word-limit style="margin-top: 6px;" />
                 </div>
-                <el-form :model="badcaseForm" label-width="80px" label-position="top">
-                    <el-form-item label="问题类型">
-                        <div style="display: flex; flex-direction: column; gap: 8px;">
-                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="radio" v-model="badcaseForm.feedback_type" value="类型错误" /> 类型错误</label>
-                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="radio" v-model="badcaseForm.feedback_type" value="描述不准确" /> 描述不准确</label>
-                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="radio" v-model="badcaseForm.feedback_type" value="打标失败误判" /> 打标失败误判</label>
-                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="radio" v-model="badcaseForm.feedback_type" value="其他" /> 其他</label>
-                        </div>
-                    </el-form-item>
-                    <el-form-item label="备注说明">
-                        <el-input v-model="badcaseForm.feedback_note" type="textarea" :rows="2" placeholder="补充说明哪里不对（可选）" maxlength="500" show-word-limit />
-                    </el-form-item>
-                    <el-form-item label="建议正确标签">
-                        <el-input v-model="badcaseForm.suggested_correct" type="textarea" :rows="2" placeholder="若知道正确答案可填写，便于后期优化（可选）" maxlength="500" show-word-limit />
-                    </el-form-item>
-                </el-form>
             </div>
             <template #footer>
                 <el-button @click="badcaseDialogVisible = false">取消</el-button>

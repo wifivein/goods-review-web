@@ -18,6 +18,7 @@ services:
         reservations:
           memory: 256M
     environment:
+      - TZ=Asia/Shanghai
       - DB_HOST=${DB_HOST:-172.17.0.1}
       - DB_PORT=${DB_PORT:-3307}
       - DB_USER=${DB_USER:-root}
@@ -67,6 +68,7 @@ services:
     # ports:
     #   - "5001:5000"
     environment:
+      - TZ=Asia/Shanghai
       - DB_HOST=${DB_HOST:-172.17.0.1}
       - DB_PORT=${DB_PORT:-3307}
       - DB_USER=${DB_USER:-root}
@@ -106,6 +108,7 @@ services:
         max-size: "20m"
         max-file: "2"
     environment:
+      - TZ=Asia/Shanghai
       - DB_HOST=${DB_HOST:-172.17.0.1}
       - DB_PORT=${DB_PORT:-3307}
       - DB_USER=${DB_USER:-root}

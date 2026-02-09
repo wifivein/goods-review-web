@@ -19,7 +19,8 @@ except ImportError:
     Image = None
 
 URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-DEFAULT_MODEL = "glm-4v-flash"
+# 默认用 GLM-4.6V 旗舰版（走资源包）；可改为 glm-4v-flash 使用免费版
+DEFAULT_MODEL = "glm-4.6v"
 
 # 这些域名的图片服务端不拉取，须由客户端拉图后传 base64
 CLIENT_FETCH_HOST_SUFFIXES = ("lovart.ai",)
@@ -167,16 +168,16 @@ def _resolve_image_for_api(raw_url: str):
 def describe_image(
     image_url: Union[str, list[str]],
     prompt: str = "请描述这张图片的内容",
-    model: str = DEFAULT_MODEL,
+    model: Union[str, None] = None,
     response_format_json: bool = False,
     api_key: Union[str, None] = None,
 ):
     """
-    调用 GLM-4V 对一张或多张图片进行理解，返回模型回复文本。
+    调用智谱视觉模型对一张或多张图片进行理解，返回模型回复文本。
 
     :param image_url: 图片 URL（字符串）或 URL 列表，需公网可访问；或 data:image/...;base64,...
     :param prompt: 向模型提问的文本；多图时可用如「请分别描述这几张图」等。若 response_format_json=True，建议在 prompt 中写明期望的 JSON 结构。
-    :param model: 模型名，默认 glm-4v-flash
+    :param model: 模型名，如 glm-4.6v（资源包）、glm-4v-flash（免费）。None 或空则用 DEFAULT_MODEL。
     :param response_format_json: 为 True 时请求智谱按 JSON 输出（response_format.json_object），便于程序解析；结构约束需在 prompt 中说明。
     :param api_key: 可选，传入时优先使用（如从配置表读取）；否则用 get_api_key()。
     :return: (success: bool, result: str | dict)
@@ -185,6 +186,8 @@ def describe_image(
     api_key = (api_key or "").strip() or get_api_key()
     if not api_key:
         return False, "未配置 BIGMODEL_API_KEY，请在环境变量或 .env 中设置"
+    if not (model or "").strip():
+        model = DEFAULT_MODEL
 
     urls = [image_url] if isinstance(image_url, str) else list(image_url)
     if not urls:

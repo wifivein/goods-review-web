@@ -47,6 +47,7 @@
                         <th>展示名</th>
                         <th>关键词</th>
                         <th class="col-center">规格图位置</th>
+                        <th class="col-center">规格数量</th>
                         <th>默认规格图URL</th>
                         <th>模板名</th>
                         <th class="col-center">模板ID</th>
@@ -56,7 +57,7 @@
                 </thead>
                 <tbody>
                     <tr v-if="list.length === 0">
-                        <td colspan="9" style="text-align:center;color:#909399;">暂无数据，可点击「新增品类」添加</td>
+                        <td colspan="10" style="text-align:center;color:#909399;">暂无数据，可点击「新增品类」添加</td>
                     </tr>
                     <tr v-for="row in list" :key="row.config_key">
                         <td>{{ row.config_key }}</td>
@@ -66,6 +67,7 @@
                             <el-tag v-else v-for="(k, i) in keywordList(row)" :key="i" size="small" class="keywords-tag">{{ k }}</el-tag>
                         </td>
                         <td class="col-center">第{{ (row.spec_image_index ?? 0) + 1 }}格</td>
+                        <td class="col-center">{{ row.is_multi_spec ? '多规格' : '单规格' }}</td>
                         <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" :title="row.spec_image_url">{{ row.spec_image_url || '—' }}</td>
                         <td>{{ row.template_name || '—' }}</td>
                         <td class="col-center">{{ row.ref_product_template_id != null ? row.ref_product_template_id : '—' }}</td>
@@ -94,6 +96,12 @@
                     <el-select v-model="form.spec_image_index" placeholder="选择第几格" style="width:100%;">
                         <el-option v-for="n in 10" :key="n-1" :label="'第' + n + '格'" :value="n - 1" />
                     </el-select>
+                </el-form-item>
+                <el-form-item label="规格数量">
+                    <el-radio-group v-model="form.is_multi_spec">
+                        <el-radio :label="0">单规格</el-radio>
+                        <el-radio :label="1">多规格</el-radio>
+                    </el-radio-group>
                 </el-form-item>
                 <el-form-item label="默认规格图URL">
                     <el-input v-model="form.spec_image_url" placeholder="审核通过时替换为该图" />
@@ -139,6 +147,7 @@
                         display_name: '',
                         spec_image_index: 2,
                         spec_image_url: '',
+                        is_multi_spec: 0,
                         template_name: '',
                         ref_product_template_id: null,
                         sort_order: 0
@@ -171,6 +180,7 @@
                             display_name: row.display_name || '',
                             spec_image_index: row.spec_image_index ?? 2,
                             spec_image_url: row.spec_image_url || '',
+                            is_multi_spec: row.is_multi_spec ? 1 : 0,
                             template_name: row.template_name || '',
                             ref_product_template_id: row.ref_product_template_id,
                             sort_order: row.sort_order ?? 0
@@ -187,6 +197,7 @@
                         display_name: '',
                         spec_image_index: 2,
                         spec_image_url: '',
+                        is_multi_spec: 0,
                         template_name: '',
                         ref_product_template_id: null,
                         sort_order: 0
@@ -205,6 +216,7 @@
                         keywords: keywords,
                         spec_image_index: this.form.spec_image_index,
                         spec_image_url: this.form.spec_image_url.trim(),
+                        is_multi_spec: this.form.is_multi_spec ? 1 : 0,
                         template_name: this.form.template_name.trim(),
                         ref_product_template_id: this.form.ref_product_template_id,
                         sort_order: this.form.sort_order

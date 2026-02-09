@@ -993,6 +993,15 @@
                                 <template v-if="goodsList[0].review_status === 0">
                                     <el-button 
                                         v-if="goodsList[0].uploadstatus === 2"
+                                        type="warning" 
+                                        size="large" 
+                                        @click="handleResetPreprocess(goodsList[0])"
+                                        style="margin-right: 8px;"
+                                    >
+                                        重新预处理
+                                    </el-button>
+                                    <el-button 
+                                        v-if="goodsList[0].uploadstatus === 2"
                                         type="success" 
                                         size="large" 
                                         @click="handleApprove(goodsList[0])"
@@ -1018,6 +1027,7 @@
                             <div class="third-image-container mobile-third-image">
                                 <div style="margin-bottom: 5px;">
                                     <strong style="color: #67c23a; font-size: 12px;">规格图</strong>
+                                    <span style="color: #909399; font-size: 11px; margin-left: 6px;">{{ goodsList[0].category_is_multi_spec ? '多规格' : '单规格' }}</span>
                                     <span v-if="goodsList[0].category_fallback" style="color: #e6a23c; font-size: 11px;">（未识别品类，按毛毯处理）</span>
                                 </div>
                                 <div class="third-image-preview clickable-image" v-if="goodsList[0].image_list && goodsList[0].image_list.length > (goodsList[0].spec_image_index ?? 2)" @click="showImageActionDialog(goodsList[0], goodsList[0].spec_image_index ?? 2)">
@@ -1092,6 +1102,15 @@
                                 <template v-if="goods.review_status === 0">
                                     <el-button 
                                         v-if="goods.uploadstatus === 2"
+                                        type="warning" 
+                                        size="large" 
+                                        @click="handleResetPreprocess(goods)"
+                                        style="margin-right: 8px;"
+                                    >
+                                        重新预处理
+                                    </el-button>
+                                    <el-button 
+                                        v-if="goods.uploadstatus === 2"
                                         type="success" 
                                         size="large" 
                                         @click="handleApprove(goods)"
@@ -1135,6 +1154,7 @@
                                 <div class="third-image-container desktop-third-image">
                                     <div style="margin-bottom: 5px; flex-shrink: 0;">
                                         <strong style="color: #67c23a; font-size: 12px;">规格图</strong>
+                                        <span style="color: #909399; font-size: 11px; margin-left: 6px;">{{ goods.category_is_multi_spec ? '多规格' : '单规格' }}</span>
                                         <span v-if="goods.category_fallback" style="color: #e6a23c; font-size: 11px;">（未识别品类，按毛毯处理）</span>
                                     </div>
                                     <div class="third-image-preview clickable-image" v-if="goods.image_list && goods.image_list.length > (goods.spec_image_index ?? 2)" @click="showImageActionDialog(goods, goods.spec_image_index ?? 2)">

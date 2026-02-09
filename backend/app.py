@@ -10,6 +10,8 @@ import requests
 from datetime import datetime
 import os
 import re
+import time
+import threading
 import logging
 from dotenv import load_dotenv
 import copy
@@ -52,6 +54,10 @@ DEFAULT_SPEC_IMAGE_URL = "https://img.kwcdn.com/product/20195053a14/c2ddafb8-2ee
 # OCRPlus 图片服务（按 URL 查 image_assets 标签）；原图标签唯一来源 image_assets/OCRPlus
 OCRPLUS_BASE_URL = os.getenv('OCRPLUS_BASE_URL', 'http://localhost:5002').rstrip('/')
 
+# 打标接口调用大模型的并发上限，与模型侧一致，避免工作流拆 items 时超过限制
+VISION_LLM_MAX_CONCURRENT = int(os.getenv('VISION_LLM_MAX_CONCURRENT', '10'))
+VISION_LLM_SEMAPHORE = threading.Semaphore(VISION_LLM_MAX_CONCURRENT)
+
 # 预审改进支撑系统（preview-lab）：审核行为反馈，可选；未配置 PREVIEW_LAB_URL 则不发送
 PREVIEW_LAB_URL = os.getenv('PREVIEW_LAB_URL', '').rstrip('/')
 
@@ -84,7 +90,7 @@ def _load_category_config(cursor):
     try:
         cursor.execute("""
             SELECT config_key, display_name, keywords, spec_image_index, spec_image_url,
-                   template_name, ref_product_template_id, sort_order
+                   template_name, ref_product_template_id, is_multi_spec, sort_order
             FROM goods_review_category_config
             ORDER BY sort_order ASC, id ASC
         """)
@@ -109,6 +115,7 @@ def _load_category_config(cursor):
                 'spec_image_url': (r.get('spec_image_url') or '').strip() or DEFAULT_SPEC_IMAGE_URL,
                 'template_name': (r.get('template_name') or '').strip(),
                 'ref_product_template_id': r.get('ref_product_template_id'),
+                'is_multi_spec': bool(r.get('is_multi_spec')),
             })
         return out
     except Exception as e:
@@ -122,14 +129,14 @@ def _resolve_category_for_product_id(cursor, product_id, category_config_list=No
     返回 (config_key, spec_image_index, spec_image_url, category_fallback)。
     category_fallback=True 表示未匹配到或无记录，使用了默认品类（blanket）。
     """
-    default_spec = ('blanket', 2, DEFAULT_SPEC_IMAGE_URL, True)
+    default_spec = ('blanket', 2, DEFAULT_SPEC_IMAGE_URL, True, False)
     if not product_id:
         return default_spec
     if not category_config_list:
         try:
             cursor.execute("""
                 SELECT config_key, display_name, keywords, spec_image_index, spec_image_url,
-                       template_name, ref_product_template_id
+                       template_name, ref_product_template_id, is_multi_spec
                 FROM goods_review_category_config
                 ORDER BY sort_order ASC, id ASC
             """)
@@ -149,6 +156,7 @@ def _resolve_category_for_product_id(cursor, product_id, category_config_list=No
                     'keywords': kw,
                     'spec_image_index': int(r.get('spec_image_index', 2)),
                     'spec_image_url': (r.get('spec_image_url') or '').strip() or DEFAULT_SPEC_IMAGE_URL,
+                    'is_multi_spec': bool(r.get('is_multi_spec')),
                 })
         except Exception as e:
             log.warning("load category config in resolve failed: %s", e)
@@ -181,6 +189,7 @@ def _resolve_category_for_product_id(cursor, product_id, category_config_list=No
                     cfg.get('spec_image_index', 2),
                     cfg.get('spec_image_url') or DEFAULT_SPEC_IMAGE_URL,
                     False,
+                    bool(cfg.get('is_multi_spec')),
                 )
     return default_spec
 
@@ -245,7 +254,7 @@ def _sync_goods_mapping(cursor, product_id, image_url_list):
         )
 
 
-def _fetch_labels_by_urls(urls, timeout=5):
+def _fetch_labels_by_urls(urls, timeout=15):
     """
     批量按 URL 向 OCRPlus 查标签。返回 dict: url_hash -> { "url", "labels" }。
     请求失败或超时返回 None，调用方回退用库内数据。
@@ -255,6 +264,7 @@ def _fetch_labels_by_urls(urls, timeout=5):
     dedup = list(dict.fromkeys(u for u in urls if u))
     if not dedup:
         return None
+    t0 = time.perf_counter()
     try:
         r = requests.post(
             f"{OCRPLUS_BASE_URL}/api/image/labels/by-url",
@@ -262,19 +272,26 @@ def _fetch_labels_by_urls(urls, timeout=5):
             headers={"Content-Type": "application/json"},
             timeout=timeout,
         )
+        elapsed_ms = (time.perf_counter() - t0) * 1000
         if r.status_code != 200:
+            log.info("[PERF] OCRPlus by-url url_count=%s elapsed_ms=%.0f status=%s", len(dedup), elapsed_ms, r.status_code)
             return None
         data = r.json()
         if data.get("code") != 200:
+            log.info("[PERF] OCRPlus by-url url_count=%s elapsed_ms=%.0f code=%s", len(dedup), elapsed_ms, data.get("code"))
             return None
         # 多 URL 时 data.data 为 dict keyed by url_hash；单 URL 时为单条 { url, labels }
         raw = data.get("data")
         if raw is None:
             return None
+        if elapsed_ms > 1000:
+            log.info("[PERF] OCRPlus by-url url_count=%s elapsed_ms=%.0f", len(dedup), elapsed_ms)
         if isinstance(raw, dict) and "labels" in raw:
             return {_url_to_hash(raw.get("url", "")): raw}
         return raw
-    except Exception:
+    except Exception as e:
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        log.info("[PERF] OCRPlus by-url url_count=%s elapsed_ms=%.0f error=%s", len(dedup), elapsed_ms, type(e).__name__)
         return None
 
 
@@ -802,10 +819,12 @@ def get_goods_list():
         order_by = request.args.get('order_by', 'time_desc')
         
         offset = (page - 1) * page_size
-        
+        t0 = time.perf_counter()
+
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+        t_db_conn = (time.perf_counter() - t0) * 1000
+
         # 构建查询条件
         where_conditions = []
         params = []
@@ -845,7 +864,6 @@ def get_goods_list():
         count_sql = f"SELECT COUNT(*) as total FROM temu_goods_v2 {where_clause}"
         cursor.execute(count_sql, params)
         total = cursor.fetchone()['total']
-        
         # 查询列表
         list_sql = f"""
             SELECT 
@@ -858,20 +876,25 @@ def get_goods_list():
         params.extend([page_size, offset])
         cursor.execute(list_sql, params)
         goods_list = cursor.fetchall()
-        
+        t_db_query = (time.perf_counter() - t0) * 1000 - t_db_conn
+
         # 品类解析：按 product_id 查 access_logs 关键词匹配，带出 spec_image_index / spec_image_url
         category_config_list = _load_category_config(cursor)
+        t_cat_start = time.perf_counter()
         for goods in goods_list:
             pid = goods.get('goods_id') or goods.get('product_id')
-            config_key, spec_idx, spec_url, fallback = _resolve_category_for_product_id(cursor, pid, category_config_list)
+            config_key, spec_idx, spec_url, fallback, is_multi_spec = _resolve_category_for_product_id(cursor, pid, category_config_list)
             goods['spec_image_index'] = spec_idx
             goods['spec_image_url'] = spec_url
             goods['category_config_key'] = config_key
             goods['category_fallback'] = fallback  # True 表示未识别到品类，按默认毛毯处理，前端可提示
+            goods['category_is_multi_spec'] = is_multi_spec  # 规格数量：供列表/详情展示
             _process_goods_row(goods)
-        
+        t_db_category_ms = (time.perf_counter() - t_cat_start) * 1000
+
         # 优先从 OCRPlus 按 URL 拉标签，失败或空则用库内 carousel_labels
         all_urls = [u for g in goods_list for u in (g.get("image_list") or [])]
+        t_ocr_start = time.perf_counter()
         if all_urls:
             labels_map = _fetch_labels_by_urls(all_urls)
             if labels_map:
@@ -879,10 +902,15 @@ def get_goods_list():
                     _enrich_goods_carousel_labels(g, labels_map)
             else:
                 log.debug("列表页 OCRPlus 标签未返回，使用库内 carousel_labels（可能不是最新）")
-        
+        t_ocrplus_ms = (time.perf_counter() - t_ocr_start) * 1000
+
         cursor.close()
         conn.close()
-        
+        t_total_ms = (time.perf_counter() - t0) * 1000
+        if t_total_ms > 800:
+            log.info("[PERF] goods/list page=%s page_size=%s db_conn_ms=%.0f db_query_ms=%.0f db_category_ms=%.0f ocrplus_ms=%.0f total_ms=%.0f url_count=%s",
+                     page, page_size, t_db_conn, t_db_query, t_db_category_ms, t_ocrplus_ms, t_total_ms, len(all_urls) if all_urls else 0)
+
         return jsonify({
             'code': 0,
             'message': 'success',
@@ -1054,7 +1082,8 @@ def vision_describe():
       - 混合：images 数组，每项为 { "url": "..." } 或 { "base64": "...", "mime": "image/png" } 或直接字符串 URL/data URL
       - 仅 URL：image_url 或 image_urls（传外部唯一标识 URL 可命中缓存，传本地/容器 URL 则查不到缓存会调模型）
       - 仅 Base64：image_base64 或 image_base64_list（无法按 URL 查缓存，会调模型）
-      - prompt 可选；json_output 可选。
+      - prompt 可选；json_output 可选；skip_cache 可选（true 时跳过 image_assets 缓存，强制重新调模型，用于换了提示词后重打标）。
+      - model 可选：智谱模型名，如 glm-4.6v（资源包）、glm-4v-flash（免费）。不传用后端默认。可借此把不同工作流指定不同模型，分开占并发（如整理用 4.6v、出图用 4v-flash，各 10 并发）。
     拉图+智谱可能需 90s+，请将 HTTP 客户端 Timeout 设为至少 120 秒（响应头 X-Recommended-Timeout: 120000）。
     """
     try:
@@ -1066,8 +1095,9 @@ def vision_describe():
                 'message': '缺少图片：请传 image_url / image_urls 或 image_base64 / image_base64_list（后端无法访问外网时用 base64）'
             }, 400)
 
-        # 缓存键即请求里的 URL：传什么就按什么查，不另做判断
-        cached = _get_cached_vision_content(urls)
+        # 缓存键仅按 URL，不含 prompt；传 skip_cache=true 可强制重新打标（如换了提示词）
+        skip_cache = data.get('skip_cache') is True
+        cached = None if skip_cache else _get_cached_vision_content(urls)
         if cached is not None:
             if len(urls) == 1:
                 cached = _normalize_single_image_vision_content(cached)
@@ -1083,8 +1113,12 @@ def vision_describe():
         prompt = (data.get('prompt') or '').strip()
         if not prompt:
             prompt = '请分别描述这几张图片的内容' if len(urls) > 1 else '请描述这张图片的内容'
+        # 统一：字面 \n（preview-lab 旧场景单行带转义）转为真实换行，与多行存法一致
+        prompt = prompt.replace('\\n', '\n')
         json_output = data.get('json_output') is True
-        success, result = describe_image(urls, prompt=prompt, response_format_json=json_output)
+        model = (data.get('model') or '').strip() or None
+        with VISION_LLM_SEMAPHORE:
+            success, result = describe_image(urls, prompt=prompt, response_format_json=json_output, model=model)
         if success:
             if len(urls) == 1:
                 result = _normalize_single_image_vision_content(result)
@@ -1092,6 +1126,122 @@ def vision_describe():
         return _vision_response({'code': -1, 'message': str(result)}, 500)
     except Exception as e:
         return _vision_response({'code': -1, 'message': str(e)}, 500)
+
+
+# 规格图细分打标：从 preview-lab 拉提示词，固定地址
+PREVIEW_LAB_BASE = "http://preview-lab:5003"
+
+
+def _fetch_prompt_from_preview_lab(scene: str, timeout: int = 10):
+    """GET preview-lab 当前提示词，返回 content 字符串。失败返回 (None, error_msg)。"""
+    url = f"{PREVIEW_LAB_BASE}/api/prompt/current?scene={urllib.parse.quote(scene)}"
+    try:
+        r = requests.get(url, timeout=timeout)
+        if r.status_code != 200:
+            return None, f"preview-lab HTTP {r.status_code}"
+        data = r.json() or {}
+        content = (data.get("data") or {}).get("content") or ""
+        if isinstance(content, str):
+            content = content.replace("\\n", "\n")
+        return (content, None)
+    except requests.RequestException as e:
+        return None, str(e)
+    except Exception as e:
+        return None, str(e)
+
+
+def _parse_json_from_vision_content(content):
+    """从 describe 返回的 content 里解析 JSON 对象（去代码块）。解析失败返回 None。"""
+    if not content or not isinstance(content, str):
+        return None
+    raw = content.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+@app.route('/api/vision/spec-sublabel', methods=['POST'])
+def vision_spec_sublabel():
+    """规格图细分打标：对一张已确定为规格图的图片，内部最多两轮打标（subtype → 若 single_spec 再 dimension）。
+    请求体: image_url（必填）, scene_subtype（默认 spec_subtype）, scene_dimension（默认 spec_dimension）。
+    提示词从 preview-lab 按场景名拉取。返回 { spec_subtype, spec_dimensions }，不改写大模型原始维度内容。
+    """
+    try:
+        data = request.json or {}
+        image_url = (data.get("image_url") or "").strip()
+        if not image_url or not image_url.startswith(("http://", "https://", "data:image/")):
+            return _vision_response({
+                "code": -1,
+                "message": "请传 image_url（必填）"
+            }, 400)
+        scene_subtype = (data.get("scene_subtype") or "spec_subtype").strip() or "spec_subtype"
+        scene_dimension = (data.get("scene_dimension") or "spec_dimension").strip() or "spec_dimension"
+
+        from vision_api import describe_image, get_api_key
+        if not get_api_key():
+            return _vision_response({"code": -1, "message": "未配置 BIGMODEL_API_KEY"}, 503)
+
+        # 第一轮：subtype（不兜底，拉不到或为空直接报错，由工作流暴露）
+        prompt_subtype, err = _fetch_prompt_from_preview_lab(scene_subtype)
+        if err:
+            return _vision_response({"code": -1, "message": f"拉取 subtype 提示词失败: {err}"}, 502)
+        if not (prompt_subtype and str(prompt_subtype).strip()):
+            return _vision_response(
+                {"code": -1, "message": "拉取 subtype 提示词失败：未配置或内容为空，请在 preview-lab 配置 spec_subtype 场景"},
+                502,
+            )
+        with VISION_LLM_SEMAPHORE:
+            success, result = describe_image(
+                image_url,
+                prompt=prompt_subtype,
+                response_format_json=True,
+            )
+            if not success:
+                return _vision_response({
+                    "code": 0,
+                    "message": "success",
+                    "data": {"spec_subtype": None, "spec_dimensions": None, "error": str(result)},
+                })
+            obj = _parse_json_from_vision_content(result)
+            spec_subtype = "single_spec"
+            if obj and isinstance(obj.get("spec_subtype"), str):
+                if obj["spec_subtype"] in ("multi_spec", "single_spec"):
+                    spec_subtype = obj["spec_subtype"]
+
+            spec_dimensions = None
+            if spec_subtype == "single_spec":
+                prompt_dim, err = _fetch_prompt_from_preview_lab(scene_dimension)
+                if err:
+                    return _vision_response({
+                        "code": -1,
+                        "message": f"拉取 dimension 提示词失败: {err}",
+                    }, 502)
+                if not (prompt_dim and str(prompt_dim).strip()):
+                    return _vision_response({
+                        "code": -1,
+                        "message": "拉取 dimension 提示词失败：未配置或内容为空，请在 preview-lab 配置 spec_dimension 场景",
+                    }, 502)
+                success2, result2 = describe_image(
+                    image_url,
+                    prompt=prompt_dim,
+                    response_format_json=True,
+                )
+                if success2 and result2:
+                    dim_obj = _parse_json_from_vision_content(result2)
+                    # 只做包装：大模型返回的维度对象原样放入 spec_dimensions，不做单位换算或字段重写
+                    if dim_obj is not None and isinstance(dim_obj, dict):
+                        spec_dimensions = dim_obj
+
+        return _vision_response({
+            "code": 0,
+            "message": "success",
+            "data": {"spec_subtype": spec_subtype, "spec_dimensions": spec_dimensions},
+        })
+    except Exception as e:
+        return _vision_response({"code": -1, "message": str(e)}, 500)
 
 
 # 单页「按 URL 查图片现状」用：与 N8N 轮播图打标一致的 5 字段 prompt
@@ -1177,9 +1327,10 @@ def image_lookup_retag():
         from vision_api import describe_image, get_api_key
         if not get_api_key():
             return jsonify({'code': -1, 'message': '未配置 BIGMODEL_API_KEY'}), 503
-        success, result = describe_image(
-            [url], prompt=CAROUSEL_LABEL_PROMPT, response_format_json=True
-        )
+        with VISION_LLM_SEMAPHORE:
+            success, result = describe_image(
+                [url], prompt=CAROUSEL_LABEL_PROMPT, response_format_json=True
+            )
         if not success:
             return jsonify({'code': -1, 'message': str(result)}), 500
         result = _normalize_single_image_vision_content(result)
@@ -1256,9 +1407,11 @@ def image_lookup_sync_goods_mapping():
 def get_goods_detail(goods_id):
     """获取商品详情"""
     try:
+        t0 = time.perf_counter()
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+        t_db_conn = (time.perf_counter() - t0) * 1000
+
         # 使用别名映射到前端习惯的字段名
         sql = f"""
             SELECT 
@@ -1269,34 +1422,43 @@ def get_goods_detail(goods_id):
         """
         cursor.execute(sql, (goods_id,))
         goods = cursor.fetchone()
-        
+        t_db_query = (time.perf_counter() - t0) * 1000 - t_db_conn
+
         if not goods:
             return jsonify({
                 'code': -1,
                 'message': '商品不存在'
             }), 404
-        
+
         # 品类解析
         pid = goods.get('goods_id') or goods.get('product_id')
         category_config_list = _load_category_config(cursor)
-        config_key, spec_idx, spec_url, fallback = _resolve_category_for_product_id(cursor, pid, category_config_list)
+        config_key, spec_idx, spec_url, fallback, is_multi_spec = _resolve_category_for_product_id(cursor, pid, category_config_list)
         goods['spec_image_index'] = spec_idx
         goods['spec_image_url'] = spec_url
         goods['category_config_key'] = config_key
         goods['category_fallback'] = fallback
+        goods['category_is_multi_spec'] = is_multi_spec
         # 处理JSON字段和补全main_image
         _process_goods_row(goods)
-        
+        t_db_category = (time.perf_counter() - t0) * 1000 - t_db_conn - t_db_query
+
         # 优先从 OCRPlus 按 URL 拉标签，失败或空则用库内 carousel_labels
         urls = goods.get("image_list") or []
+        t_ocr_start = time.perf_counter()
         if urls:
             labels_map = _fetch_labels_by_urls(urls)
             if labels_map:
                 _enrich_goods_carousel_labels(goods, labels_map)
-        
+        t_ocrplus_ms = (time.perf_counter() - t_ocr_start) * 1000
+
         cursor.close()
         conn.close()
-        
+        t_total_ms = (time.perf_counter() - t0) * 1000
+        if t_total_ms > 500:
+            log.info("[PERF] goods/detail id=%s db_conn_ms=%.0f db_query_ms=%.0f db_category_ms=%.0f ocrplus_ms=%.0f total_ms=%.0f url_count=%s",
+                     goods_id, t_db_conn, t_db_query, t_db_category, t_ocrplus_ms, t_total_ms, len(urls) if urls else 0)
+
         return jsonify({
             'code': 0,
             'message': 'success',
@@ -1554,6 +1716,32 @@ def update_goods_carousel_labels():
     }), 410
 
 
+@app.route('/api/goods/reset-preprocess', methods=['POST'])
+def reset_preprocess():
+    """将商品 process_status 从 2 改为 0（重新预处理）。body: id（商品表主键）。"""
+    try:
+        data = request.json or {}
+        goods_id = data.get('id')
+        if goods_id is None:
+            return jsonify({'code': -1, 'message': 'id 不能为空'}), 400
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE temu_goods_v2 SET process_status = 0, update_time = NOW() WHERE id = %s",
+            (goods_id,),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            cursor.close()
+            conn.close()
+            return jsonify({'code': -1, 'message': '商品不存在'}), 404
+        cursor.close()
+        conn.close()
+        return jsonify({'code': 0, 'message': '已重置为待预处理'})
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
 @app.route('/api/goods/approve', methods=['POST'])
 def approve_goods():
     """审核通过商品（review_status 从 0 变成 1）。按品类替换规格图位为标准图；不足 4 张作废（官方最少 5 张，4 张可补 1 张材质图）。"""
@@ -1604,7 +1792,7 @@ def approve_goods():
 
         # 按品类取规格图位置与标准图 URL
         pid = goods.get('product_id')
-        _config_key, spec_idx, spec_url, _fallback = _resolve_category_for_product_id(cursor, pid)
+        _config_key, spec_idx, spec_url, _fallback, _ = _resolve_category_for_product_id(cursor, pid)
         if spec_idx >= len(image_list):
             spec_idx = min(2, len(image_list) - 1)  # 越界时兜底
             spec_url = DEFAULT_SPEC_IMAGE_URL
@@ -1800,7 +1988,7 @@ def list_category_config():
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, config_key, display_name, keywords, spec_image_index, spec_image_url,
-                   template_name, ref_product_template_id, sort_order, created_at, updated_at
+                   template_name, ref_product_template_id, is_multi_spec, sort_order, created_at, updated_at
             FROM goods_review_category_config
             ORDER BY sort_order ASC, id ASC
         """)
@@ -1839,14 +2027,15 @@ def create_category_config():
         ref_product_template_id = data.get('ref_product_template_id')
         if ref_product_template_id is not None:
             ref_product_template_id = int(ref_product_template_id)
+        is_multi_spec = 1 if data.get('is_multi_spec') else 0
         sort_order = int(data.get('sort_order', 0))
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO goods_review_category_config
-            (config_key, display_name, keywords, spec_image_index, spec_image_url, template_name, ref_product_template_id, sort_order)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (config_key, display_name, keywords_json, spec_image_index, spec_image_url, template_name, ref_product_template_id, sort_order))
+            (config_key, display_name, keywords, spec_image_index, spec_image_url, template_name, ref_product_template_id, is_multi_spec, sort_order)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (config_key, display_name, keywords_json, spec_image_index, spec_image_url, template_name, ref_product_template_id, is_multi_spec, sort_order))
         conn.commit()
         rid = cursor.lastrowid
         cursor.close()
@@ -1872,6 +2061,7 @@ def update_category_config(config_key):
         spec_image_url = data.get('spec_image_url')
         template_name = data.get('template_name')
         ref_product_template_id = data.get('ref_product_template_id')
+        is_multi_spec = data.get('is_multi_spec')
         sort_order = data.get('sort_order')
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1895,6 +2085,9 @@ def update_category_config(config_key):
         if ref_product_template_id is not None:
             updates.append("ref_product_template_id = %s")
             params.append(int(ref_product_template_id) if ref_product_template_id else None)
+        if is_multi_spec is not None:
+            updates.append("is_multi_spec = %s")
+            params.append(1 if is_multi_spec else 0)
         if sort_order is not None:
             updates.append("sort_order = %s")
             params.append(int(sort_order))
@@ -2495,7 +2688,7 @@ def update_design_images_from_lovart():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT id, design_images FROM lovart_design_tab_mapping WHERE tab_id = %s',
+            'SELECT id, design_images, excluded_image_indices FROM lovart_design_tab_mapping WHERE tab_id = %s',
             (tab_id,)
         )
         row = cursor.fetchone()
@@ -2510,14 +2703,26 @@ def update_design_images_from_lovart():
                 current = []
         if not isinstance(current, list):
             current = []
+        old_count = len(current)
+        raw_ex = row.get('excluded_image_indices')
+        try:
+            current_excluded = json.loads(raw_ex) if isinstance(raw_ex, str) and raw_ex and raw_ex.strip() else (raw_ex if isinstance(raw_ex, list) else [])
+        except Exception:
+            current_excluded = []
+        current_excluded = [int(x) for x in current_excluded if isinstance(x, (int, float)) and int(x) >= 1]
+        # 只保留对「旧列表」的排除，新多出来的序号不加入排除（默认不排除）
+        new_excluded = [x for x in current_excluded if x <= old_count]
+        excluded_json = json.dumps(new_excluded, ensure_ascii=False)
         local_uploads = [x for x in current if isinstance(x, dict) and (x.get('title') == '本地上传' or (x.get('url') and 'design_upload_' in str(x.get('url'))))]
         merged = list(design_images_new)
         for x in local_uploads:
             merged.append(x)
         merged_json = json.dumps(merged, ensure_ascii=False)
         cursor.execute(
-            'UPDATE lovart_design_tab_mapping SET design_images = %s, updated_at = NOW() WHERE tab_id = %s',
-            (merged_json, tab_id)
+            """UPDATE lovart_design_tab_mapping
+               SET design_images = %s, excluded_image_indices = %s, updated_at = NOW()
+               WHERE tab_id = %s""",
+            (merged_json, excluded_json, tab_id)
         )
         conn.commit()
         cursor.close()
@@ -2553,14 +2758,37 @@ def update_design_completed():
         cursor = conn.cursor()
         
         if design_images is not None:
-            # 新字段：写入 design_images
+            # 新字段：写入 design_images；保留对「旧列表」的排除，新多出来的序号默认不排除
             design_images_str = json.dumps(design_images) if not isinstance(design_images, str) else design_images
+            cursor.execute(
+                'SELECT design_images, excluded_image_indices FROM lovart_design_tab_mapping WHERE tab_id = %s',
+                (tab_id,)
+            )
+            old_row = cursor.fetchone()
+            old_count = 0
+            current_excluded = []
+            if old_row:
+                old_imgs = old_row.get('design_images')
+                if old_imgs and isinstance(old_imgs, str) and old_imgs.strip():
+                    try:
+                        old_list = json.loads(old_imgs)
+                        old_count = len(old_list) if isinstance(old_list, list) else 0
+                    except Exception:
+                        pass
+                raw_ex = old_row.get('excluded_image_indices')
+                try:
+                    current_excluded = json.loads(raw_ex) if isinstance(raw_ex, str) and raw_ex and raw_ex.strip() else (raw_ex if isinstance(raw_ex, list) else [])
+                except Exception:
+                    pass
+                current_excluded = [int(x) for x in current_excluded if isinstance(x, (int, float)) and int(x) >= 1]
+            new_excluded = [x for x in current_excluded if x <= old_count]
+            excluded_json = json.dumps(new_excluded, ensure_ascii=False)
             update_sql = """
-                UPDATE lovart_design_tab_mapping 
-                SET design_images = %s, updated_at = NOW()
+                UPDATE lovart_design_tab_mapping
+                SET design_images = %s, excluded_image_indices = %s, updated_at = NOW()
                 WHERE tab_id = %s
             """
-            cursor.execute(update_sql, (design_images_str, tab_id))
+            cursor.execute(update_sql, (design_images_str, excluded_json, tab_id))
         else:
             # 老字段：写入 design_image_1/2/3，并标记为最终状态「已处理完」（completed）
             update_sql = """
@@ -3195,7 +3423,8 @@ def design_ai_recommend():
         image_urls = list(original_urls) + [u for _, u in sorted(design_candidates, key=lambda x: x[0])]
 
         from vision_api import describe_image
-        success, result = describe_image(image_urls, prompt=prompt_tpl, response_format_json=True, api_key=api_key)
+        with VISION_LLM_SEMAPHORE:
+            success, result = describe_image(image_urls, prompt=prompt_tpl, response_format_json=True, api_key=api_key)
         if not success:
             cursor.close()
             conn.close()

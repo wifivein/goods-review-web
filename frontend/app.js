@@ -531,6 +531,26 @@ function initApp() {
                 }
             }
         },
+        // 重新预处理：将 process_status 从 2 改为 0
+        async handleResetPreprocess(goods) {
+            try {
+                const response = await axios.post(`${API_BASE_URL}/goods/reset-preprocess`, { id: goods.id });
+                if (response.data.code === 0) {
+                    ElMessage.success(response.data.message || '已重置为待预处理');
+                    if (this.isMobile) {
+                        await this.loadGoodsList();
+                    } else {
+                        await this.refreshGoodsItem(goods.id);
+                    }
+                    this.loadStatistics();
+                } else {
+                    ElMessage.error(response.data.message || '操作失败');
+                }
+            } catch (error) {
+                console.error('重新预处理失败:', error);
+                ElMessage.error('操作失败: ' + (error.message || '网络错误'));
+            }
+        },
         // 审核通过
         async handleApprove(goods) {
             try {
@@ -811,10 +831,18 @@ function initApp() {
 
             if (!lab) return '';
             if (lab.label_failed) return '打标失败';
-            const typeMap = { product_display: '主图', spec: '规格', material: '材质', other: '其他' };
-            const t = typeMap[lab.image_type] || lab.image_type || '';
             const q = lab.quality_ok === true ? '✓' : (lab.quality_ok === false ? '✗' : '');
             const score = lab.first_image_score != null && Number(lab.first_image_score) > 0 ? '首图' + lab.first_image_score : '';
+            if (lab.image_type === 'spec' && (lab.spec_subtype === 'multi_spec' || lab.spec_subtype === 'single_spec')) {
+                let specLabel = lab.spec_subtype === 'multi_spec' ? '多规格图' : '单规格图';
+                if (lab.spec_subtype === 'single_spec' && lab.spec_dimensions != null) {
+                    const d = lab.spec_dimensions;
+                    specLabel = typeof d === 'object' ? (d.inches && d.cm ? d.inches + ' 英寸 / ' + d.cm + ' 厘米' : (d.cm || d.inches || '单规格图')) : String(d);
+                }
+                return [specLabel, q, score].filter(Boolean).join(' ');
+            }
+            const typeMap = { product_display: '主图', spec: '规格', material: '材质', other: '其他' };
+            const t = typeMap[lab.image_type] || lab.image_type || '';
             return [t, q, score].filter(Boolean).join(' ');
         },
         getImageLabelTitle(goods, index) {
@@ -822,18 +850,39 @@ function initApp() {
             if (!lab) return '';
             return this.formatLabelFullText(lab);
         },
-        // 点开图片后显示的完整标签文案（按字段逐行，含首图分数/理由）
+        // 点开图片后显示的完整标签文案（所有键逐行展示，新标签默认原样显示）
         formatLabelFullText(lab) {
             if (!lab) return '';
             if (lab.label_failed) return '打标失败: ' + this.decodeUnicode(lab.design_desc || '未知错误');
+            const keyToLabel = {
+                image_type: '类型',
+                product_complete: '完整展示',
+                shape: '形状',
+                design_desc: '描述',
+                quality_ok: '质量',
+                first_image_score: '首图分数',
+                first_image_reason: '首图理由',
+                spec_subtype: '规格细分',
+                spec_dimensions: '规格尺寸',
+                image_url: '图片URL',
+                original_url: '原图URL',
+                label_failed: '打标失败'
+            };
+            const formatValue = (key, v) => {
+                if (v === undefined || v === null) return '';
+                if (key === 'quality_ok' && typeof v === 'boolean') return v ? '通过' : '不通过';
+                if (typeof v === 'boolean') return v ? '是' : '否';
+                if (key === 'spec_dimensions' && typeof v === 'object' && v !== null) return v.inches && v.cm ? v.inches + ' 英寸 / ' + v.cm + ' 厘米' : (v.cm || v.inches || '');
+                if (typeof v === 'object') return JSON.stringify(v);
+                return String(v);
+            };
             const lines = [];
-            if (lab.image_type) lines.push('类型: ' + lab.image_type);
-            if (lab.product_complete !== undefined) lines.push('完整展示: ' + (lab.product_complete ? '是' : '否'));
-            if (lab.shape && lab.shape !== 'unknown') lines.push('形状: ' + lab.shape);
-            if (lab.design_desc) lines.push('描述: ' + lab.design_desc);
-            if (typeof lab.quality_ok === 'boolean') lines.push('质量: ' + (lab.quality_ok ? '通过' : '不通过'));
-            if (lab.first_image_score != null && Number(lab.first_image_score) >= 0) lines.push('首图分数: ' + lab.first_image_score);
-            if (lab.first_image_reason) lines.push('首图理由: ' + lab.first_image_reason);
+            for (const key of Object.keys(lab)) {
+                const label = keyToLabel[key] || key;
+                const val = lab[key];
+                if (val === undefined) continue;
+                lines.push(label + ': ' + formatValue(key, val));
+            }
             return lines.join('\n');
         },
         // 获取完整标签对象（供 badcase 记录用）

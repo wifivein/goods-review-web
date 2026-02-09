@@ -1,0 +1,35 @@
+{
+  "name": "【同步】商品按采集时间增量同步",
+  "nodes": [
+    {"parameters": {}, "type": "n8n-nodes-base.manualTrigger", "typeVersion": 1, "position": [-1040, -96], "id": "sync-manual", "name": "When clicking 'Execute workflow'"},
+    {"parameters": {"rule": {"interval": [{"field": "minutes", "minutesInterval": 30}]}}, "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.3, "position": [-1040, 80], "id": "sync-schedule", "name": "每30分钟同步"},
+    {"parameters": {"operation": "executeQuery", "query": "SELECT DATE(MAX(create_time)) AS last_sync_date FROM temu_goods_v2", "options": {}}, "type": "n8n-nodes-base.mySql", "typeVersion": 2.5, "position": [-800, -96], "id": "sync-query-date", "name": "查上次同步日期", "credentials": {"mySql": {"id": "4nNvDBTA9jUj1O1U", "name": "MySQL：temu_baodan"}}},
+    {"parameters": {"mode": "runOnceForAllItems", "jsCode": "const row = $input.first().json;\nconst last = row.last_sync_date ? String(row.last_sync_date).slice(0, 10) : null;\nconst today = new Date();\nif (!last) {\n  const yesterday = new Date(today);\n  yesterday.setDate(yesterday.getDate() - 1);\n  return [{ json: { last_sync_date: yesterday.toISOString().slice(0, 10) } }];\n}\nreturn [{ json: { last_sync_date: last } }];"}, "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-560, -96], "id": "sync-default-date", "name": "默认昨日"},
+    {"parameters": {"assignments": {"assignments": [{"id": "a1", "name": "page", "value": "={{ $json.page !== undefined ? $json.page : 1 }}", "type": "number"}, {"id": "a2", "name": "last_sync_date", "value": "={{ $json.last_sync_date !== undefined ? $json.last_sync_date : $('默认昨日').first().json.last_sync_date }}", "type": "string"}]}, "options": {}}, "type": "n8n-nodes-base.set", "typeVersion": 3.4, "position": [-320, -96], "id": "sync-init-page", "name": "初始化页码"},
+    {"parameters": {"method": "POST", "url": "https://gwfpod.com/api/collect/product/page", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendHeaders": true, "headerParameters": {"parameters": [{"name": "accept", "value": "application/json, text/plain, */*"}, {"name": "content-type", "value": "application/json"}, {"name": "origin", "value": "https://gwfpod.com"}, {"name": "user-agent", "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}]}, "sendBody": true, "specifyBody": "json", "jsonBody": "={\"page\":{{ $json.page }},\"limit\":100,\"search\":{\"id\":null,\"product_name\":null,\"product_id\":null,\"extcode\":null,\"group_id\":null,\"infringement_status\":null,\"create_time\":[\"{{ $json.last_sync_date }}\",null]}}", "options": {}}, "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.3, "position": [-80, -96], "id": "sync-request", "name": "请求新软件采集箱列表", "credentials": {"httpHeaderAuth": {"id": "039mfktEpPGo7kiA", "name": "特么爆单API的Token"}}},
+    {"parameters": {"fieldToSplitOut": "data.list", "options": {}}, "type": "n8n-nodes-base.splitOut", "typeVersion": 1, "position": [160, -96], "id": "sync-split", "name": "Split Out"},
+    {"parameters": {"mode": "runOnceForEachItem", "jsCode": "const jsonFields = ['carousel_pic_urls', 'sku_list', 'sku_specs', 'malls', 'product_template', 'product_size_template'];\nconst newData = {};\nfor (const key in $json) {\n  let value = $json[key];\n  let newKey = key;\n  if (key === 'id') newKey = 'api_id';\n  if (key === 'group') newKey = 'group_data';\n  if (jsonFields.includes(key)) value = value ? JSON.stringify(value) : null;\n  newData[newKey] = (value === undefined || value === \"\") ? null : value;\n}\nreturn newData;"}, "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [400, -96], "id": "sync-transform", "name": "字段转换"},
+    {"parameters": {"operation": "upsert", "table": {"__rl": true, "value": "temu_goods_v2", "mode": "list", "cachedResultName": "temu_goods_v2"}, "columnToMatchOn": "product_id", "options": {}}, "type": "n8n-nodes-base.mySql", "typeVersion": 2.5, "position": [640, -96], "id": "sync-write-db", "name": "写入数据库", "credentials": {"mySql": {"id": "4nNvDBTA9jUj1O1U", "name": "MySQL：temu_baodan"}}},
+    {"parameters": {"conditions": {"options": {"caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 1}, "conditions": [{"id": "check-len", "leftValue": "={{ $('请求新软件采集箱列表').last().json.data.list.length }}", "rightValue": "=100", "operator": {"type": "number", "operation": "equals"}}], "combinator": "and"}, "options": {"looseTypeValidation": true}}, "type": "n8n-nodes-base.if", "typeVersion": 2, "position": [880, -96], "id": "sync-has-next", "name": "是否有下一页?"},
+    {"parameters": {"amount": 1}, "type": "n8n-nodes-base.wait", "typeVersion": 1.1, "position": [1120, -208], "id": "sync-wait", "name": "Wait", "webhookId": "sync-wait-wid"},
+    {"parameters": {"jsCode": "const init = $('初始化页码').last().json;\nconst defaultDate = $('默认昨日').first().json.last_sync_date;\nreturn [{ json: { page: init.page + 1, last_sync_date: defaultDate } }];"}, "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1120, -320], "id": "sync-incr-page", "name": "页码递增"},
+    {"parameters": {"content": "## 按采集时间增量\n\n只拉 create_time >= 上次同步日期；不传 is_publish。\n接口不支持 update_time，侵权结果等状态需靠发布/整理流程写回或后续单独方案。", "height": 100}, "type": "n8n-nodes-base.stickyNote", "typeVersion": 1, "position": [-1040, -260], "id": "sync-note", "name": "Sticky Note"}
+  ],
+  "connections": {
+    "When clicking 'Execute workflow'": {"main": [[{"node": "查上次同步日期", "type": "main", "index": 0}]]},
+    "每30分钟同步": {"main": [[{"node": "查上次同步日期", "type": "main", "index": 0}]]},
+    "查上次同步日期": {"main": [[{"node": "默认昨日", "type": "main", "index": 0}]]},
+    "默认昨日": {"main": [[{"node": "初始化页码", "type": "main", "index": 0}]]},
+    "初始化页码": {"main": [[{"node": "请求新软件采集箱列表", "type": "main", "index": 0}]]},
+    "请求新软件采集箱列表": {"main": [[{"node": "Split Out", "type": "main", "index": 0}]]},
+    "Split Out": {"main": [[{"node": "字段转换", "type": "main", "index": 0}]]},
+    "字段转换": {"main": [[{"node": "写入数据库", "type": "main", "index": 0}]]},
+    "写入数据库": {"main": [[{"node": "是否有下一页?", "type": "main", "index": 0}]]},
+    "是否有下一页?": {"main": [[{"node": "Wait", "type": "main", "index": 0}], []]},
+    "Wait": {"main": [[{"node": "页码递增", "type": "main", "index": 0}]]},
+    "页码递增": {"main": [[{"node": "初始化页码", "type": "main", "index": 0}]]}
+  },
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "meta": {"templateCredsSetupCompleted": true}
+}
